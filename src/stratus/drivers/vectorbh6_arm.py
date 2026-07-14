@@ -60,15 +60,15 @@ class VectorBH6ArmDriver:
             if st is not None:
                 logger.info("Joint %s: status=%d pos=%.3f", jc.name, st.status_code, st.pos)
         self._endpos = ArmEndPos(self._arm)
-        gentle_kp = np.array([40.0, 40.0, 40.0, 15.0, 15.0, 15.0], dtype=np.float64)
-        gentle_kd = np.array([4.0, 4.0, 4.0, 2.0, 2.0, 2.0], dtype=np.float64)
+        self._mit_kp = np.array([40.0, 40.0, 40.0, 15.0, 15.0, 15.0], dtype=np.float64)
+        self._mit_kd = np.array([4.0, 4.0, 4.0, 2.0, 2.0, 2.0], dtype=np.float64)
         q_curr, _, _ = self._arm.get_state()
         self._endpos._q_target[:] = q_curr
-        self._endpos._loop_cb = lambda arm, dt: arm.mit(
+        self._endpos._loop_cb = lambda ctrl, dt: self._arm.mit(
             self._endpos._q_target,
-            kp=gentle_kp, kd=gentle_kd, request_feedback=False,
+            kp=self._mit_kp, kd=self._mit_kd, request_feedback=False,
         )
-        self._arm.start_control_loop(self._endpos._loop_cb, rate=50)
+        self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
         self._endpos._running = True
 
     def _init_gripper(self) -> None:
@@ -204,62 +204,80 @@ class VectorBH6ArmDriver:
         ok = self._endpos.move_to_ik(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw)
         if ok:
             q_ik = self._endpos._q_target.copy()
-            logger.info("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK ok (joints=%s), slewing (%.1fs)",
-                        x, y, z, pitch, np.round(q_ik, 3), duration)
-            self._slew_to_joints(q_ik, duration)
+            logger.info("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK ok (joints=%s), "
+                        "slewing (%.1fs)", x, y, z, pitch, np.round(q_ik, 3), duration)
+            self._arm.stop_control_loop()
+            self._slew_mit(q_ik, duration)
+            self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
             self._endpos._q_target[:] = q_ik
-            time.sleep(2.0)
+            self._arm._request_and_poll()
             q, _, _ = self._arm.get_state()
             err = np.max(np.abs(q - q_ik))
-            logger.info("move_to_pose done (joints=%s, max_err=%.3f)", np.round(q, 3), err)
+            for jc in self._arm._joints:
+                st = self._arm._motor_map[jc.name].get_state()
+                if st is not None:
+                    logger.info("  %s: pos=%.3f status=%d (target=%.3f)",
+                                jc.name, st.pos, st.status_code, q_ik[self._arm._joints.index(jc)])
+            logger.info("move_to_pose done (max_err=%.3f)", err)
         else:
             logger.warning("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK failed",
                            x, y, z, pitch)
         return ok
 
-    def _slew_to_joints(self, target: npt.NDArray[np.float64], duration: float = 4.0) -> None:
+    def _slew_mit(self, target: npt.NDArray[np.float64], duration: float = 4.0) -> None:
         q_start, _, _ = self._arm.get_state()
-        n = max(1, int(duration / 0.05))
+        n = max(1, int(duration / 0.1))
+        dt = duration / n
         for i in range(1, n + 1):
             alpha = i / n
-            self._endpos._q_target[:] = q_start + alpha * (target - q_start)
-            time.sleep(0.05)
+            q = q_start + alpha * (target - q_start)
+            self._arm.mit(pos=q, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
+            time.sleep(dt)
+        self._arm.mit(pos=target, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
 
     def execute_triage(self, command: TriageCommand) -> bool:
         if not command.pickup_pose:
             return False
         pu = command.pickup_pose
-        approach_z = pu.get("z", 0) + 0.12
+        px = pu.get("x", 0)
+        py = pu.get("y", 0)
+        pz = pu.get("z", 0)
+        pitch = pu.get("pitch", 0)
 
         logger.info("[triage] start: %s", command.detected_labels[:3])
 
-        logger.info("[triage] approach (z=%.3f)", approach_z)
-        if not self.move_to_pose(x=pu.get("x", 0), y=pu.get("y", 0), z=approach_z,
-                                 roll=pu.get("roll", 0), pitch=pu.get("pitch", 0), yaw=pu.get("yaw", 0),
-                                 duration=4.0):
+        pre_z = max(pz + 0.20, 0.30)
+        logger.info("[triage] pre-approach up (z=%.3f)", pre_z)
+        if not self.move_to_pose(x=px, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0, duration=4.0):
+            logger.warning("pre-approach failed")
+            return False
+
+        approach_z = pz + 0.10
+        logger.info("[triage] approach descend (z=%.3f)", approach_z)
+        if not self.move_to_pose(x=px, y=py, z=approach_z, roll=0, pitch=pitch, yaw=0, duration=3.0):
             logger.warning("approach failed")
             return False
 
         logger.info("[triage] open gripper")
         self.gripper_open()
 
-        logger.info("[triage] descend (z=%.3f)", pu.get("z", 0))
-        self.move_to_pose(**pu, duration=4.0)
-        time.sleep(0.3)
-        self.gripper_close()
-        time.sleep(0.3)
+        logger.info("[triage] descend to pickup (z=%.3f)", pz)
+        self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0, duration=3.0)
 
-        lift_z = pu.get("z", 0) + 0.10
+        logger.info("[triage] close gripper")
+        self.gripper_close()
+
+        lift_z = pz + 0.10
         logger.info("[triage] lift (z=%.3f)", lift_z)
-        self.move_to_pose(x=pu.get("x", 0), y=pu.get("y", 0), z=lift_z,
-                          roll=pu.get("roll", 0), pitch=pu.get("pitch", 0), yaw=pu.get("yaw", 0),
-                          duration=4.0)
-        time.sleep(0.3)
+        self.move_to_pose(x=px, y=py, z=lift_z, roll=0, pitch=pitch, yaw=0, duration=3.0)
 
         if command.drop_joints is not None:
             target = np.deg2rad(command.drop_joints)
             logger.info("[triage] drop to joints %s", target)
-            self._slew_to_joints(target, duration=4.0)
+            self._arm.stop_control_loop()
+            self._slew_mit(target, duration=4.0)
+            self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
+            self._endpos._q_target[:] = target
             time.sleep(0.5)
         elif command.drop_pose:
             self.move_to_pose(**command.drop_pose, duration=4.0)
@@ -268,7 +286,10 @@ class VectorBH6ArmDriver:
         self.gripper_open()
 
         logger.info("[triage] return home")
-        self._slew_to_joints(np.zeros(6), duration=4.0)
+        self._arm.stop_control_loop()
+        self._slew_mit(np.zeros(6), duration=4.0)
+        self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
+        self._endpos._q_target[:] = np.zeros(6)
         time.sleep(0.5)
         logger.info("[triage] done")
         return True
@@ -278,10 +299,12 @@ class VectorBH6ArmDriver:
 
     def disconnect(self) -> None:
         if self._endpos:
-            self._endpos.end()
-            self._endpos = None
-        elif self._arm:
+            self._endpos._running = False
+        if self._arm:
+            self._arm.disable()
+            time.sleep(0.3)
             self._arm.disconnect()
+        self._endpos = None
         self._arm = None
 
     @property

@@ -84,6 +84,9 @@ class YOLOClassifier:
         cy = (obj.top + obj.height / 2)
         map_x = 0.08 + cx * 0.34
         map_y = -0.15 + cy * 0.30
+        # offset gripper behind the object so fingers can wrap around
+        offset_x = -0.01 * (map_x - 0.25) * 0
+        offset_y = -0.03
 
         logger.info(f"Pick {top[0]} at ({map_x:.3f}, {map_y:.3f}) -> bin_{target.lower()}")
 
@@ -92,57 +95,7 @@ class YOLOClassifier:
             label=f"Grade {grade} - Refurbishable",
             detected_labels=top,
             detected_objects=objects,
-            pickup_pose={"x": map_x, "y": map_y, "z": 0.12,
+            pickup_pose={"x": map_x + offset_x, "y": map_y + offset_y, "z": 0.12,
                          "roll": 0, "pitch": 0.4, "yaw": 0},
             drop_joints=DROP_JOINTS[target],
-        )
-
-        # Run YOLO-World on the full frame with text prompts
-        results = self._model(frame.image, conf=self._conf, verbose=False, iou=0.5)[0]
-
-        labels = []
-        objects = []
-        for b in results.boxes:
-            cls_id = int(b.cls[0])
-            conf = float(b.conf[0])
-            label = results.names[cls_id]
-            x1, y1, x2, y2 = map(int, b.xyxy[0])
-            labels.append({"label": label, "confidence": conf})
-            objects.append(DetectedObject(
-                name=label, confidence=conf,
-                left=x1 / w, top=y1 / h,
-                width=(x2 - x1) / w, height=(y2 - y1) / h,
-            ))
-
-        unique = list(dict.fromkeys(l["label"] for l in labels))
-        logger.info(f"Detected: {unique}")
-
-        if not unique:
-            logger.info("No objects detected")
-            return TriageCommand(
-                action="none", target_bin="", label="",
-                detected_labels=[], detected_objects=[],
-                pickup_pose=None, drop_joints=None,
-            )
-
-        grade = "A"
-        target = "A"
-        top = unique[:5]
-
-        obj = objects[0]
-        cx = (obj.left + obj.width / 2)
-        cy = (obj.top + obj.height / 2)
-        map_x = 0.08 + cx * 0.34
-        map_y = -0.15 + cy * 0.30
-
-        logger.info(f"Pick {top[0]} at ({map_x:.3f}, {map_y:.3f}) -> bin_{target.lower()}")
-
-        return TriageCommand(
-            action="pick_and_place", target_bin=f"bin_{target.lower()}",
-            label=f"Grade {grade} - Refurbishable",
-            detected_labels=top,
-            detected_objects=objects,
-            pickup_pose={"x": map_x, "y": map_y, "z": 0.12,
-                         "roll": 0, "pitch": 0.4, "yaw": 0},
-            drop_joints=DROP_JOINTS[grade],
         )

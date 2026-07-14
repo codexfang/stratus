@@ -23,7 +23,7 @@ class DummyClassifier:
         return TriageCommand(
             action="pick_and_place",
             target_bin=grade,
-            pickup_pose={"x": 0.25, "y": 0.0, "z": 0.15, "roll": 0, "pitch": 0.4, "yaw": 0},
+            pickup_pose={"x": 0.25, "y": 0.0, "z": 0.10, "roll": 0, "pitch": 0.4, "yaw": 0},
             drop_joints=bin_cfg["angles"],
             label=bin_cfg["label"],
         )

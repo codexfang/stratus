@@ -38,20 +38,19 @@ class VectorBH6ArmDriver:
 
     def connect(self) -> None:
         self._arm.connect()
-        self._arm.mode_pos_vel(vlim=0.5)
         if self._gripper_cfg is not None:
             self._init_gripper()
-        else:
+        self._arm.mode_pos_vel(vlim=0.5)
+        if self._gripper_cfg is None:
             self._arm.enable()
+        else:
+            for jc in self._arm._joints:
+                try:
+                    self._arm._motor_map[jc.name].enable()
+                except Exception:
+                    pass
         self._endpos = ArmEndPos(self._arm)
         self._endpos.start()
-
-    def _enable_joints(self) -> None:
-        for jc in self._arm._joints:
-            try:
-                self._arm._motor_map[jc.name].enable()
-            except Exception:
-                pass
 
     def _init_gripper(self) -> None:
         cfg = self._gripper_cfg
@@ -89,7 +88,6 @@ class VectorBH6ArmDriver:
                         mot.ensure_mode(Mode.MIT, 1000)
                         time.sleep(0.3)
                         self._gripper_motor = mot
-                        self._enable_joints()
                         logger.info("Gripper ID %d enabled in MIT mode (timeout=5s)", cfg.motor_id)
                         return
                 time.sleep(0.15)

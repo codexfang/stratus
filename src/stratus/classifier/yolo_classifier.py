@@ -92,7 +92,7 @@ class YOLOClassifier:
             label=f"Grade {grade} - Refurbishable",
             detected_labels=top,
             detected_objects=objects,
-            pickup_pose={"x": map_x, "y": map_y, "z": 0.12,
+            pickup_pose={"x": map_x, "y": map_y, "z": 0.08,
                          "roll": 0, "pitch": 0.4, "yaw": 0},
             drop_joints=DROP_JOINTS[target],
         )

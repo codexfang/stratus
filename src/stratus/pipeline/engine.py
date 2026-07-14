@@ -129,8 +129,14 @@ class StratusPipeline:
             if key == ord('y'):
                 cx = (obj.left + obj.width / 2)
                 cy = (obj.top + obj.height / 2)
-                cmd.pickup_pose = {"x": 0.15 + cx * 0.50, "y": -0.20 + cy * 0.40,
-                                   "z": 0.15, "roll": 0, "pitch": 0.2, "yaw": 0}
+                mo = self._classifier._map_offset_x if hasattr(self._classifier, '_map_offset_x') else 0.15
+                ms = self._classifier._map_scale_x if hasattr(self._classifier, '_map_scale_x') else 0.50
+                mox = self._classifier._map_offset_y if hasattr(self._classifier, '_map_offset_y') else -0.20
+                msy = self._classifier._map_scale_y if hasattr(self._classifier, '_map_scale_y') else 0.40
+                pz = self._classifier._pickup_z if hasattr(self._classifier, '_pickup_z') else 0.15
+                pt = self._classifier._pitch if hasattr(self._classifier, '_pitch') else 0.2
+                cmd.pickup_pose = {"x": mo + cx * ms, "y": mox + cy * msy,
+                                   "z": pz, "roll": 0, "pitch": pt, "yaw": 0}
                 cmd.detected_labels = [obj.name]
                 cmd.detected_objects = [obj]
                 return True

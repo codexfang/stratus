@@ -34,6 +34,13 @@ def main():
     parser.add_argument("--settle-time", type=float, default=4.0)
     parser.add_argument("--model", default="")
     parser.add_argument("--conf", type=float, default=0.25)
+    parser.add_argument("--map-offset-x", type=float, default=0.15)
+    parser.add_argument("--map-scale-x", type=float, default=0.50)
+    parser.add_argument("--map-offset-y", type=float, default=-0.20)
+    parser.add_argument("--map-scale-y", type=float, default=0.40)
+    parser.add_argument("--pickup-z", type=float, default=0.15)
+    parser.add_argument("--pitch", type=float, default=0.2)
+    parser.add_argument("--approach-inset", type=float, default=0.03)
     args = parser.parse_args()
 
     print("=== Stratus Pipeline ===")
@@ -47,9 +54,10 @@ def main():
             close_pos=args.gripper_close,
             mit_kp=args.gripper_kp,
             settle_time=args.settle_time,
+            approach_inset=args.approach_inset,
         )
         print(f"Gripper: motor ID {args.gripper_id}, open={args.gripper_open} close={args.gripper_close} "
-              f"kp={args.gripper_kp} settle={args.settle_time}s")
+              f"kp={args.gripper_kp} settle={args.settle_time}s inset={args.approach_inset}m")
 
     arm = VectorBH6ArmDriver(gripper=gripper_cfg) if not args.no_arm else None
 
@@ -63,7 +71,12 @@ def main():
 
     if args.model:
         from stratus.classifier.yolo_classifier import YOLOClassifier
-        classifier = YOLOClassifier(model_path=args.model, conf_threshold=args.conf)
+        classifier = YOLOClassifier(
+            model_path=args.model, conf_threshold=args.conf,
+            map_offset_x=args.map_offset_x, map_scale_x=args.map_scale_x,
+            map_offset_y=args.map_offset_y, map_scale_y=args.map_scale_y,
+            pickup_z=args.pickup_z, pitch=args.pitch,
+        )
         print(f"YOLO model: {args.model} (conf={args.conf})")
 
     if args.mode == "aws":

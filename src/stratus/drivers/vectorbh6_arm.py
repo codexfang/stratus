@@ -40,16 +40,19 @@ class VectorBH6ArmDriver:
         self._arm.connect()
         if self._gripper_cfg is not None:
             self._init_gripper()
-        self._arm.mode_pos_vel(vlim=0.5)
-        if self._gripper_cfg is None:
-            self._arm.enable()
-        else:
-            for jc in self._arm._joints:
-                try:
-                    self._arm._motor_map[jc.name].enable()
-                except Exception:
-                    pass
+        self._arm.mode_mit()
+        for jc in self._arm._joints:
+            try:
+                self._arm._motor_map[jc.name].enable()
+            except Exception:
+                pass
         self._endpos = ArmEndPos(self._arm)
+        mit_kp = self._arm._mit_kp.copy()
+        mit_kd = self._arm._mit_kd.copy()
+        self._endpos._loop_cb = lambda arm, dt: arm.mit(
+            self._endpos._q_target,
+            kp=mit_kp, kd=mit_kd, request_feedback=False,
+        )
         self._endpos.start()
 
     def _init_gripper(self) -> None:
@@ -128,7 +131,7 @@ class VectorBH6ArmDriver:
         )
 
     def send_joint_positions(self, positions: npt.NDArray[np.float64]) -> None:
-        self._arm.pos_vel(pos=positions)
+        self._arm.mit(pos=positions)
 
     def move_to_pose(self, x: float, y: float, z: float,
                      roll: float = 0, pitch: float = 0, yaw: float = 0) -> bool:

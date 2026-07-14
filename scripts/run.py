@@ -31,8 +31,7 @@ def main():
     parser.add_argument("--gripper-id", type=int, default=0, help="Gripper motor ID (0=disable)")
     parser.add_argument("--gripper-open", type=float, default=0.6)
     parser.add_argument("--gripper-close", type=float, default=0.0)
-    parser.add_argument("--gripper-kp", type=float, default=200.0)
-    parser.add_argument("--gripper-kd", type=float, default=10.0)
+    parser.add_argument("--model", default="", help="Path to YOLO best.pt (overrides Rekognition)")
     args = parser.parse_args()
 
     print("=== Stratus Pipeline ===")
@@ -44,8 +43,6 @@ def main():
             motor_id=args.gripper_id,
             open_pos=args.gripper_open,
             close_pos=args.gripper_close,
-            kp=args.gripper_kp,
-            kd=args.gripper_kd,
         )
         print(f"Gripper: motor ID {args.gripper_id}, open={args.gripper_open} close={args.gripper_close}")
 
@@ -58,6 +55,11 @@ def main():
 
     classifier = DummyClassifier()
     telemetry = LocalTelemetry(log_path=Path.home() / "stratus/data/logs/telemetry.jsonl")
+
+    if args.model:
+        from stratus.classifier.yolo_classifier import YOLOClassifier
+        classifier = YOLOClassifier(model_path=args.model)
+        print(f"YOLO model: {args.model}")
 
     if args.mode == "aws":
         from stratus.classifier.rekognition import RekognitionClassifier

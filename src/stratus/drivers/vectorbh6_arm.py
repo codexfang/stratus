@@ -66,7 +66,8 @@ class VectorBH6ArmDriver:
             self._endpos._q_target,
             kp=mit_kp, kd=mit_kd, request_feedback=False,
         )
-        self._endpos.start()
+        self._arm.start_control_loop(self._endpos._loop_cb)
+        self._endpos._running = True
 
     def _init_gripper(self) -> None:
         cfg = self._gripper_cfg

@@ -23,8 +23,8 @@ class GripperConfig:
     model: str = "4310"
     open_pos: float = 5.0
     close_pos: float = -5.0
-    mit_kp: float = 2.0
-    mit_kd: float = 0.1
+    mit_kp: float = 10.0
+    mit_kd: float = 1.0
     settle_time: float = 4.0
 
 
@@ -60,8 +60,8 @@ class VectorBH6ArmDriver:
             if st is not None:
                 logger.info("Joint %s: status=%d pos=%.3f", jc.name, st.status_code, st.pos)
         self._endpos = ArmEndPos(self._arm)
-        gentle_kp = np.array([10.0, 10.0, 10.0, 5.0, 5.0, 5.0], dtype=np.float64)
-        gentle_kd = np.array([2.0, 2.0, 2.0, 1.0, 1.0, 1.0], dtype=np.float64)
+        gentle_kp = np.array([40.0, 40.0, 40.0, 15.0, 15.0, 15.0], dtype=np.float64)
+        gentle_kd = np.array([4.0, 4.0, 4.0, 2.0, 2.0, 2.0], dtype=np.float64)
         q_curr, _, _ = self._arm.get_state()
         self._endpos._q_target[:] = q_curr
         self._endpos._loop_cb = lambda arm, dt: arm.mit(
@@ -104,6 +104,18 @@ class VectorBH6ArmDriver:
                     if st.status_code == 1:
                         mot.set_can_timeout_ms(60000)
                         time.sleep(0.1)
+                        try:
+                            p_min = mot.read_register_f32(15)
+                            p_max = mot.read_register_f32(16)
+                            logger.info("Gripper P_MIN=%.2f P_MAX=%.2f", p_min, p_max)
+                            if p_max < 8.0:
+                                mot.write_register_f32(16, 8.0)
+                                time.sleep(0.05)
+                                mot.store_parameters()
+                                time.sleep(0.1)
+                                logger.info("Gripper P_MAX raised to 8.0")
+                        except Exception as e:
+                            logger.warning("Gripper register read/write failed: %s", e)
                         mot.ensure_mode(Mode.MIT, 1000)
                         time.sleep(0.3)
                         self._gripper_motor = mot

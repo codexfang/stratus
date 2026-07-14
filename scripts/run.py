@@ -30,6 +30,8 @@ def main():
     parser.add_argument("--gripper-id", type=int, default=0)
     parser.add_argument("--gripper-open", type=float, default=5.0)
     parser.add_argument("--gripper-close", type=float, default=-5.0)
+    parser.add_argument("--gripper-kp", type=float, default=10.0)
+    parser.add_argument("--settle-time", type=float, default=4.0)
     parser.add_argument("--model", default="")
     parser.add_argument("--conf", type=float, default=0.25)
     args = parser.parse_args()
@@ -43,8 +45,11 @@ def main():
             motor_id=args.gripper_id,
             open_pos=args.gripper_open,
             close_pos=args.gripper_close,
+            mit_kp=args.gripper_kp,
+            settle_time=args.settle_time,
         )
-        print(f"Gripper: motor ID {args.gripper_id}, open={args.gripper_open} close={args.gripper_close}")
+        print(f"Gripper: motor ID {args.gripper_id}, open={args.gripper_open} close={args.gripper_close} "
+              f"kp={args.gripper_kp} settle={args.settle_time}s")
 
     arm = VectorBH6ArmDriver(gripper=gripper_cfg) if not args.no_arm else None
 

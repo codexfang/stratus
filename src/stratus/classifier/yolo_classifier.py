@@ -93,6 +93,6 @@ class YOLOClassifier:
             detected_labels=top,
             detected_objects=objects,
             pickup_pose={"x": map_x, "y": map_y, "z": 0.12,
-                         "roll": 0, "pitch": 0.4, "yaw": 0},
+                         "roll": 0, "pitch": 0.2, "yaw": 0},
             drop_joints=DROP_JOINTS[target],
         )

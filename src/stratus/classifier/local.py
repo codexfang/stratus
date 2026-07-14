@@ -26,4 +26,6 @@ class DummyClassifier:
             pickup_pose={"x": 0.25, "y": 0.0, "z": 0.10, "roll": 0, "pitch": 0.4, "yaw": 0},
             drop_joints=bin_cfg["angles"],
             label=bin_cfg["label"],
+            detected_labels=["test"],
+            detected_objects=[],
         )

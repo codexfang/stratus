@@ -102,12 +102,12 @@ class VectorBH6ArmDriver:
                         mot.enable()
                         time.sleep(0.3)
                     if st.status_code == 1:
-                        mot.set_can_timeout_ms(5000)
+                        mot.set_can_timeout_ms(60000)
                         time.sleep(0.1)
                         mot.ensure_mode(Mode.MIT, 1000)
                         time.sleep(0.3)
                         self._gripper_motor = mot
-                        logger.info("Gripper ID %d enabled in MIT mode (timeout=5s)", cfg.motor_id)
+                        logger.info("Gripper ID %d enabled in MIT mode (timeout=60s)", cfg.motor_id)
                         return
                 time.sleep(0.15)
 
@@ -119,23 +119,47 @@ class VectorBH6ArmDriver:
     def _gripper_cmd(self, pos: float) -> None:
         if self._gripper_motor is None:
             return
+        from motorbridge import Mode
         cfg = self._gripper_cfg
-        try:
-            self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
-            time.sleep(0.5)
-            for _ in range(5):
-                self._gripper_motor.request_feedback()
-                time.sleep(0.02)
-                ctrl = self._arm._ctrl_map.get("damiao")
-                if ctrl:
-                    ctrl.poll_feedback_once()
-                st = self._gripper_motor.get_state()
-                if st is not None:
-                    logger.info("[gripper] pos=%.3f status=%d", st.pos, st.status_code)
-                    break
-                time.sleep(0.1)
-        except Exception as e:
-            logger.warning("gripper mit failed: %s", e)
+        ctrl = self._arm._ctrl_map.get("damiao")
+        for retry in range(3):
+            try:
+                st = None
+                for _ in range(3):
+                    self._gripper_motor.request_feedback()
+                    time.sleep(0.02)
+                    if ctrl:
+                        ctrl.poll_feedback_once()
+                    st = self._gripper_motor.get_state()
+                    if st is not None:
+                        break
+                    time.sleep(0.05)
+                if st is not None and st.status_code != 1:
+                    logger.warning("[gripper] status=%d before cmd, clearing error", st.status_code)
+                    self._gripper_motor.clear_error()
+                    time.sleep(0.2)
+                    self._gripper_motor.enable()
+                    time.sleep(0.2)
+                    self._gripper_motor.ensure_mode(Mode.MIT, 1000)
+                    time.sleep(0.3)
+                self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
+                time.sleep(cfg.settle_time)
+                for _ in range(5):
+                    self._gripper_motor.request_feedback()
+                    time.sleep(0.02)
+                    if ctrl:
+                        ctrl.poll_feedback_once()
+                    st = self._gripper_motor.get_state()
+                    if st is not None:
+                        logger.info("[gripper] retry=%d pos=%.3f status=%d (target=%.1f)",
+                                    retry, st.pos, st.status_code, pos)
+                        break
+                    time.sleep(0.1)
+                if st is not None and abs(st.pos - pos) < 1.0:
+                    return
+                logger.warning("[gripper] retry %d: pos %.3f != target %.1f", retry, st.pos if st else -1, pos)
+            except Exception as e:
+                logger.warning("[gripper] cmd failed (retry %d): %s", retry, e)
 
     def gripper_open(self) -> None:
         if self._gripper_motor is None:
@@ -171,8 +195,11 @@ class VectorBH6ArmDriver:
             logger.info("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK ok (joints=%s), slewing (%.1fs)",
                         x, y, z, pitch, np.round(q_ik, 3), duration)
             self._slew_to_joints(q_ik, duration)
+            self._endpos._q_target[:] = q_ik
+            time.sleep(2.0)
             q, _, _ = self._arm.get_state()
-            logger.info("move_to_pose done (joints=%s)", np.round(q, 3))
+            err = np.max(np.abs(q - q_ik))
+            logger.info("move_to_pose done (joints=%s, max_err=%.3f)", np.round(q, 3), err)
         else:
             logger.warning("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK failed",
                            x, y, z, pitch)
@@ -190,7 +217,7 @@ class VectorBH6ArmDriver:
         if not command.pickup_pose:
             return False
         pu = command.pickup_pose
-        approach_z = pu.get("z", 0) + 0.10
+        approach_z = pu.get("z", 0) + 0.12
 
         logger.info("[triage] start: %s", command.detected_labels[:3])
 

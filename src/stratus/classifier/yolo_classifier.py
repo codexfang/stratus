@@ -5,18 +5,9 @@ import logging
 
 from stratus.core.vision import CameraFrame
 from stratus.core.arm_driver import TriageCommand, DetectedObject
-from stratus.core.detector import LocalDetector
 from ultralytics import YOLO
 
 logger = logging.getLogger(__name__)
-
-# COCO class IDs for common ITAD-relevant objects
-GRADE_A_IDS = {41: "cup", 39: "bottle", 47: "apple", 46: "banana",
-               77: "cell phone", 76: "keyboard", 75: "mouse",
-               73: "book", 76: "remote", 74: "clock",
-               72: "tv", 70: "laptop", 62: "chair",
-               84: "book", 67: "cell phone"}
-GRADE_C_IDS = {}
 
 COCO_NAMES = {0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 4: 'airplane',
               5: 'bus', 6: 'train', 7: 'truck', 8: 'boat', 9: 'traffic light',
@@ -36,6 +27,21 @@ COCO_NAMES = {0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 4: 'airplane
               73: 'book', 74: 'clock', 75: 'vase', 76: 'scissors', 77: 'teddy bear',
               78: 'hair drier', 79: 'toothbrush'}
 
+GRADE_A_NAMES = {"cup", "bottle", "cell phone", "keyboard", "mouse",
+                 "book", "scissors", "laptop", "remote", "clock",
+                 "fork", "spoon", "knife", "bowl", "vase",
+                 "teddy bear", "tv", "refrigerator", "microwave",
+                 "toaster", "oven", "sink", "chair", "couch",
+                 "potted plant", "dining table", "donut", "cake",
+                 "banana", "apple", "sandwich", "orange", "broccoli",
+                 "carrot", "hot dog", "pizza", "wine glass",
+                 "baseball bat", "sports ball", "frisbee", "kite",
+                 "umbrella", "backpack", "suitcase", "handbag",
+                 "tie", "bird", "cat", "dog", "horse",
+                 "car", "bicycle", "motorcycle", "truck", "bus",
+                 "train", "boat", "airplane"}
+GRADE_C_NAMES = set()
+
 DROP_JOINTS = {
     "A": [45, -30, 30, 0, 0, 0],
     "B": [-45, -30, 30, 0, 0, 0],
@@ -45,22 +51,19 @@ DROP_JOINTS = {
 
 class YOLOClassifier:
     def __init__(self, model_path: str = "yolov8n.pt",
-                 conf_threshold: float = 0.5):
+                 conf_threshold: float = 0.3):
         self._model = YOLO(str(model_path))
         self._conf = conf_threshold
-        self._detector = LocalDetector(min_area=800)
         self._bg_captured = False
-        n = self._model.names
-        logger.info("YOLO loaded (%d classes)", len(n))
+        logger.info("YOLO loaded (%d classes)", len(COCO_NAMES))
 
     def set_background(self, frame: CameraFrame) -> None:
-        self._detector.set_background(frame.image)
         self._bg_captured = True
 
     def _enhance(self, img: np.ndarray) -> np.ndarray:
         lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         l = clahe.apply(l)
         enhanced = cv2.merge([l, a, b])
         enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
@@ -70,7 +73,7 @@ class YOLOClassifier:
 
     def classify(self, frame: CameraFrame) -> TriageCommand:
         h, w = frame.image.shape[:2]
-        margin_x, margin_y = int(w * 0.35), int(h * 0.35)
+        margin_x, margin_y = int(w * 0.30), int(h * 0.30)
         ws_x1, ws_y1 = margin_x, margin_y
         ws_x2, ws_y2 = w - margin_x, h - margin_y
 
@@ -83,60 +86,54 @@ class YOLOClassifier:
                 drop_joints=DROP_JOINTS["B"],
             )
 
-        candidates = self._detector.detect(frame.image)
-        if not candidates:
-            logger.info("No objects detected")
-            return TriageCommand(
-                action="none", target_bin="", label="",
-                detected_labels=[], detected_objects=[],
-                pickup_pose=None, drop_joints=None,
-            )
+        # Run YOLO on the center crop at native resolution
+        workspace = frame.image[ws_y1:ws_y2, ws_x1:ws_x2]
+        enhanced = self._enhance(workspace)
+        results = self._model(enhanced, conf=self._conf, verbose=False, imgsz=640)[0]
 
-        box = candidates[0]
-        crop = self._detector.crop_object(frame.image, box, margin=0.4)
-        if crop.shape[0] < 64 or crop.shape[1] < 64:
-            return TriageCommand(
-                action="none", target_bin="", label="",
-                detected_labels=[], detected_objects=[],
-                pickup_pose=None, drop_joints=None,
-            )
-
-        crop_hires = cv2.resize(crop, (640, 640), interpolation=cv2.INTER_CUBIC)
-        enhanced = self._enhance(crop_hires)
-
-        results = self._model(enhanced, conf=self._conf, verbose=False)[0]
         labels = []
+        objects = []
         for b in results.boxes:
             cls_id = int(b.cls[0])
             conf = float(b.conf[0])
             label = COCO_NAMES.get(cls_id, f"id_{cls_id}")
+            x1, y1, x2, y2 = map(int, b.xyxy[0])
             labels.append({"label": label, "confidence": conf})
+            objects.append(DetectedObject(
+                name=label, confidence=conf,
+                left=(ws_x1 + x1) / w,
+                top=(ws_y1 + y1) / h,
+                width=(x2 - x1) / w,
+                height=(y2 - y1) / h,
+            ))
 
         unique = list(dict.fromkeys(l["label"] for l in labels))
-        logger.info(f"Object @({box.cx:.2f},{box.cy:.2f}) {box.w}x{box.h}: {unique[:6]}")
+        logger.info(f"Detected: {unique}")
 
         if not unique:
-            unique = ["unknown"]
+            logger.info("No objects detected by YOLO")
+            return TriageCommand(
+                action="none", target_bin="", label="",
+                detected_labels=[], detected_objects=[],
+                pickup_pose=None, drop_joints=None,
+            )
 
         lower = {l.lower() for l in unique}
-        if lower & {"broken", "cracked", "damaged", "scratch", "rust", "burn", "bent", "dented"}:
+        if lower & GRADE_C_NAMES:
             grade, text, target = "C", "Scrap/Recycle", "C"
-        elif lower & {"cup", "bottle", "cell phone", "keyboard", "mouse",
-                       "book", "scissors", "laptop", "remote", "clock",
-                       "fork", "spoon", "knife", "bowl", "vase",
-                       "teddy bear", "tv", "refrigerator", "microwave"}:
+        elif lower & GRADE_A_NAMES:
             grade, text, target = "A", "Refurbishable", "A"
         else:
             grade, text, target = "B", "Needs Repair", "B"
 
         top = unique[:5]
 
-        ws_cx = ws_x1 + box.x + box.w / 2
-        ws_cy = ws_y1 + box.y + box.h / 2
-        norm_x = ws_cx / w
-        norm_y = ws_cy / h
-        map_x = 0.08 + norm_x * 0.34
-        map_y = -0.15 + norm_y * 0.30
+        # Use the first detected box for pickup pose
+        obj = objects[0]
+        cx = (obj.left + obj.width / 2)
+        cy = (obj.top + obj.height / 2)
+        map_x = 0.08 + cx * 0.34
+        map_y = -0.15 + cy * 0.30
 
         logger.info(f"Pick {top[0]} at ({map_x:.3f}, {map_y:.3f}) -> bin_{target.lower()} (Grade {grade})")
 
@@ -144,11 +141,7 @@ class YOLOClassifier:
             action="pick_and_place", target_bin=f"bin_{target.lower()}",
             label=f"Grade {grade} - {text}",
             detected_labels=top,
-            detected_objects=[DetectedObject(
-                name=top[0], confidence=80.0,
-                left=box.x / w, top=box.y / h,
-                width=box.w / w, height=box.h / h,
-            )],
+            detected_objects=objects,
             pickup_pose={"x": map_x, "y": map_y, "z": 0.12,
                          "roll": 0, "pitch": 0.4, "yaw": 0},
             drop_joints=DROP_JOINTS[grade],

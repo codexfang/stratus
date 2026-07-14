@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--gripper-open", type=float, default=0.6)
     parser.add_argument("--gripper-close", type=float, default=0.0)
     parser.add_argument("--model", default="", help="Path to YOLO best.pt (overrides Rekognition)")
+    parser.add_argument("--conf", type=float, default=0.25, help="YOLO confidence threshold")
     args = parser.parse_args()
 
     print("=== Stratus Pipeline ===")
@@ -58,8 +59,8 @@ def main():
 
     if args.model:
         from stratus.classifier.yolo_classifier import YOLOClassifier
-        classifier = YOLOClassifier(model_path=args.model)
-        print(f"YOLO model: {args.model}")
+        classifier = YOLOClassifier(model_path=args.model, conf_threshold=args.conf)
+        print(f"YOLO model: {args.model} (conf={args.conf})")
 
     if args.mode == "aws":
         from stratus.classifier.rekognition import RekognitionClassifier

@@ -306,9 +306,11 @@ class VectorBH6ArmDriver:
         self.gripper_open()
 
         logger.info("[triage] return home")
-        self.move_to_pose(x=0, y=0, z=0.30, pitch=0, duration=5.0)
+        self.move_to_pose(x=0, y=0, z=0.30, pitch=0, duration=6.0)
+        time.sleep(0.5)
         self._arm.stop_control_loop()
-        self._slew_mit(np.zeros(6), duration=5.0)
+        self._slew_mit(np.zeros(6), duration=6.0)
+        time.sleep(0.5)
         self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
         self._endpos._q_target[:] = np.zeros(6)
         time.sleep(0.5)

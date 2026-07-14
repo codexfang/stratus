@@ -38,6 +38,7 @@ class StratusPipeline:
         self._last_h = 480
         self._last_w = 640
         self._bg_captured = False
+        self._bg_frame = None
         self._current_objects: list[DetectedObject] = []
         self._selected_idx: int = 0
         cv2.namedWindow("Stratus – ITAD Sorting")
@@ -98,7 +99,44 @@ class StratusPipeline:
         logger.info(f"-> {cmd.label}  labels={cmd.detected_labels[:3]}")
         return cmd
 
-    def _servo_refine(self, cmd: TriageCommand) -> None:
+    def _gripper_pixel(self, frame, estimated_gx=None, estimated_gy=None):
+        """Find gripper centroid via background subtraction.
+        Returns (norm_x, norm_y) or None."""
+        if self._bg_frame is None:
+            return None
+        diff = cv2.absdiff(frame.image, self._bg_frame.image)
+        gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY)
+        kernel = np.ones((5, 5), np.uint8)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+        h, w = frame.image.shape[:2]
+        candidates = []
+        for cnt in contours:
+            if cv2.contourArea(cnt) < 300:
+                continue
+            M = cv2.moments(cnt)
+            if M["m00"] == 0:
+                continue
+            cx = M["m10"] / M["m00"] / w
+            cy = M["m01"] / M["m00"] / h
+            candidates.append((cx, cy, cv2.contourArea(cnt)))
+        if not candidates:
+            return None
+        if estimated_gx is not None:
+            candidates.sort(key=lambda c: (c[0] - estimated_gx)**2 + (c[1] - estimated_gy)**2)
+            cx, cy, _ = candidates[0]
+        else:
+            cx, cy, _ = max(candidates, key=lambda c: c[2])
+        return (cx, cy)
+
+    def _visual_servo(self, cmd: TriageCommand) -> None:
+        """Relative visual servoing: find gripper + object in camera, correct arm position.
+        With a fixed camera, the object's absolute pixel doesn't change when the arm moves,
+        so we use the RELATIVE offset between gripper and object instead."""
         if not self._arm or not cmd.pickup_pose:
             return
         if self._camera is None:
@@ -108,12 +146,28 @@ class StratusPipeline:
         pitch = pu.get("pitch", 0)
         target_name = cmd.detected_labels[0] if cmd.detected_labels else ""
 
+        mox = getattr(self._classifier, '_map_offset_x', 0.15)
+        msx = getattr(self._classifier, '_map_scale_x', 0.50)
+        moy = getattr(self._classifier, '_map_offset_y', -0.20)
+        msy = getattr(self._classifier, '_map_scale_y', 0.40)
+
+        # Estimated gripper pixel (from mapping inverse — approximate but good enough)
+        est_gx = (pu["x"] - mox) / msx if msx != 0 else 0.5
+        est_gy = (pu["y"] - moy) / msy if msy != 0 else 0.5
+
+        # Move arm to initial estimate
         self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=5.0)
 
         for iteration in range(2):
             frame = self._camera.read()
             if frame is None:
                 break
+
+            gp = self._gripper_pixel(frame, est_gx, est_gy)
+            if gp is None:
+                logger.warning("[servo] gripper not found via motion")
+                break
+
             refined = self._classifier.classify(frame)
             best = None
             for obj in refined.detected_objects:
@@ -121,35 +175,29 @@ class StratusPipeline:
                     best = obj
                     break
             if best is None:
+                logger.warning("[servo] target '%s' not found in new frame", target_name)
                 break
-            cx = best.left + best.width / 2
-            cy = best.top + best.height / 2
-            mo = getattr(self._classifier, '_map_offset_x', 0.15)
-            ms = getattr(self._classifier, '_map_scale_x', 0.50)
-            mox = getattr(self._classifier, '_map_offset_y', -0.20)
-            msy = getattr(self._classifier, '_map_scale_y', 0.40)
-            new_x = mo + cx * ms
-            new_y = mox + cy * msy
-            dx = new_x - pu["x"]
-            dy = new_y - pu["y"]
-            max_correction = 0.15
-            if abs(dx) > max_correction or abs(dy) > max_correction:
-                logger.warning("[servo] large delta (%.3f, %.3f), clamping to %.1f cm", dx, dy, max_correction * 100)
-                dx = max(-max_correction, min(max_correction, dx))
-                dy = max(-max_correction, min(max_correction, dy))
-                new_x = pu["x"] + dx
-                new_y = pu["y"] + dy
-            logger.info("[servo] iter=%d target=%s pixel=(%.3f,%.3f) world=(%.3f,%.3f) delta=(%.3f,%.3f)",
-                        iteration, target_name, cx, cy, new_x, new_y, dx, dy)
-            pu["x"] = new_x
-            pu["y"] = new_y
-            self._arm.move_to_pose(new_x, new_y, pre_z, pitch=pitch, duration=3.0)
+
+            ox = best.left + best.width / 2
+            oy = best.top + best.height / 2
+
+            dx_px = ox - gp[0]
+            dy_px = oy - gp[1]
+            dx = dx_px * msx
+            dy = dy_px * msy
+
+            logger.info("[servo] iter=%d gripper=(%.3f,%.3f) obj=(%.3f,%.3f) rel=(%.3f,%.3f) corr=(%.3f,%.3f)",
+                        iteration, gp[0], gp[1], ox, oy, dx_px, dy_px, dx, dy)
+
+            pu["x"] += dx
+            pu["y"] += dy
+            self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=3.0)
 
         cmd.pickup_refined = True
 
     def _exec_and_telemetry(self, cmd: TriageCommand) -> None:
         if self._arm:
-            self._servo_refine(cmd)
+            self._visual_servo(cmd)
             self._arm.execute_triage(cmd)
         if self._telemetry:
             drop = cmd.drop_joints or cmd.drop_pose
@@ -222,6 +270,7 @@ class StratusPipeline:
             cv2.waitKey(500)
 
         self._classifier.set_background(frame)
+        self._bg_frame = frame
         self._bg_captured = True
         logger.info("Background captured")
 

@@ -129,8 +129,8 @@ class StratusPipeline:
             if key == ord('y'):
                 cx = (obj.left + obj.width / 2)
                 cy = (obj.top + obj.height / 2)
-                cmd.pickup_pose = {"x": 0.08 + cx * 0.34, "y": -0.15 + cy * 0.30,
-                                   "z": 0.12, "roll": 0, "pitch": 0.2, "yaw": 0}
+                cmd.pickup_pose = {"x": 0.15 + cx * 0.50, "y": -0.20 + cy * 0.40,
+                                   "z": 0.15, "roll": 0, "pitch": 0.2, "yaw": 0}
                 cmd.detected_labels = [obj.name]
                 cmd.detected_objects = [obj]
                 return True

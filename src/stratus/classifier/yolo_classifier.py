@@ -82,8 +82,8 @@ class YOLOClassifier:
         obj = objects[0]
         cx = (obj.left + obj.width / 2)
         cy = (obj.top + obj.height / 2)
-        map_x = 0.08 + cx * 0.34
-        map_y = -0.15 + cy * 0.30
+        map_x = 0.15 + cx * 0.50
+        map_y = -0.20 + cy * 0.40
 
         logger.info(f"Pick {top[0]} at ({map_x:.3f}, {map_y:.3f}) -> bin_{target.lower()}")
 
@@ -92,7 +92,7 @@ class YOLOClassifier:
             label=f"Grade {grade} - Refurbishable",
             detected_labels=top,
             detected_objects=objects,
-            pickup_pose={"x": map_x, "y": map_y, "z": 0.12,
+            pickup_pose={"x": map_x, "y": map_y, "z": 0.15,
                          "roll": 0, "pitch": 0.2, "yaw": 0},
             drop_joints=DROP_JOINTS[target],
         )

@@ -21,7 +21,7 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 5.0
+    open_pos: float = 1.0
     close_pos: float = -5.0
     mit_kp: float = 10.0
     mit_kd: float = 1.0
@@ -105,15 +105,23 @@ class VectorBH6ArmDriver:
                         mot.set_can_timeout_ms(60000)
                         time.sleep(0.1)
                         try:
-                            p_min = mot.read_register_f32(15)
-                            p_max = mot.read_register_f32(16)
-                            logger.info("Gripper P_MIN=%.2f P_MAX=%.2f", p_min, p_max)
-                            if p_max < 8.0:
-                                mot.write_register_f32(16, 8.0)
-                                time.sleep(0.05)
-                                mot.store_parameters()
-                                time.sleep(0.1)
-                                logger.info("Gripper P_MAX raised to 8.0")
+                            for r in [15, 16]:
+                                for _ in range(3):
+                                    try:
+                                        val = mot.read_register_f32(r, timeout_ms=500)
+                                        if r == 15:
+                                            logger.info("Gripper P_MIN=%.2f", val)
+                                        else:
+                                            logger.info("Gripper P_MAX=%.2f", val)
+                                            if val < 8.0:
+                                                mot.write_register_f32(16, 8.0)
+                                                time.sleep(0.05)
+                                                mot.store_parameters()
+                                                time.sleep(0.1)
+                                                logger.info("Gripper P_MAX raised to 8.0")
+                                        break
+                                    except Exception:
+                                        time.sleep(0.1)
                         except Exception as e:
                             logger.warning("Gripper register read/write failed: %s", e)
                         mot.ensure_mode(Mode.MIT, 1000)
@@ -167,9 +175,7 @@ class VectorBH6ArmDriver:
                                     retry, st.pos, st.status_code, pos)
                         break
                     time.sleep(0.1)
-                if st is not None and abs(st.pos - pos) < 1.0:
-                    return
-                logger.warning("[gripper] retry %d: pos %.3f != target %.1f", retry, st.pos if st else -1, pos)
+                return
             except Exception as e:
                 logger.warning("[gripper] cmd failed (retry %d): %s", retry, e)
 

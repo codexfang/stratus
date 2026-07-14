@@ -40,6 +40,7 @@ class VectorBH6ArmDriver:
         self._arm.connect()
         self._arm.mode_pos_vel(vlim=0.5)
         if self._gripper_cfg is not None:
+            self._arm.enable()
             self._init_gripper()
         else:
             self._arm.enable()
@@ -89,10 +90,7 @@ class VectorBH6ArmDriver:
                         time.sleep(0.2)
                         self._gripper_motor = mot
                         logger.info("Gripper ID %d enabled in MIT mode (timeout=5s)", cfg.motor_id)
-                        self._arm.enable()
-                        mot.ensure_mode(Mode.MIT, 1000)
-                        time.sleep(0.2)
-                        logger.info("Arm joints enabled, gripper re-ensured MIT")
+                        logger.info("Arm joints already enabled before gripper init")
                         return
                 time.sleep(0.15)
 

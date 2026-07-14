@@ -37,15 +37,28 @@ class VectorBH6ArmDriver:
         self._gripper_motor = None
 
     def connect(self) -> None:
+        from motorbridge import Mode
         self._arm.connect()
         if self._gripper_cfg is not None:
             self._init_gripper()
         self._arm.mode_mit()
-        for jc in self._arm._joints:
+        time.sleep(0.3)
+        self._arm.enable()
+        time.sleep(0.3)
+        if self._gripper_motor is not None:
             try:
-                self._arm._motor_map[jc.name].enable()
+                self._gripper_motor.ensure_mode(Mode.MIT, 1000)
             except Exception:
                 pass
+        self._arm._request_and_poll()
+        for jc in self._arm._joints:
+            try:
+                self._arm._motor_map[jc.name].ensure_mode(Mode.MIT, 1000)
+            except Exception:
+                pass
+            st = self._arm._motor_map[jc.name].get_state()
+            if st is not None:
+                logger.info("Joint %s: status=%d pos=%.3f", jc.name, st.status_code, st.pos)
         self._endpos = ArmEndPos(self._arm)
         mit_kp = self._arm._mit_kp.copy()
         mit_kd = self._arm._mit_kd.copy()

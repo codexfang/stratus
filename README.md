@@ -40,7 +40,7 @@ Stratus is an end-to-end robotic sorting pipeline for IT Asset Disposition (ITAD
 ## Tech Stack
 
 - **Language**: Python 3.10
-- **Robotics**: Seeed Studio B601 arm, reBotArm_control_py, Damiao DM-J4310 motors, USB-to-CAN (motorbridge)
+- **Robotics**: Seeed Studio B601 arm, Damiao DM-J4310 motors, USB-to-CAN (motorbridge)
 - **Vision**: OpenCV, CLAHE preprocessing, background subtraction, contour detection
 - **AI / ML**: AWS Rekognition (label detection, per-crop grading)
 - **Cloud**: AWS DynamoDB, AWS IoT Core MQTT

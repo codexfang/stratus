@@ -43,7 +43,7 @@ Stratus is an end-to-end robotic sorting pipeline for IT Asset Disposition (ITAD
 - **Robotics**: Seeed Studio B601 arm, Damiao DM-J4310 motors, USB-to-CAN (motorbridge)
 - **Vision**: OpenCV, CLAHE preprocessing, background subtraction, contour detection
 - **AI / ML**: AWS Rekognition (label detection, per-crop grading)
-- **Cloud**: AWS DynamoDB, AWS IoT Core MQTT
+- **Cloud**: AWS DynamoDB, AWS IoT Core MQTT, AWS IAM
 - **Telemetry**: DynamoDB (persistent), IoT Core MQTT (streaming), JSONL (local)
 - **Hardware Interface**: USB webcam (Arducam 1080P), serial CAN dongle
 - **OS**: macOS (Apple Silicon)

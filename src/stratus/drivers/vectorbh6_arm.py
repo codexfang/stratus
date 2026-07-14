@@ -21,11 +21,11 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 2.0
-    close_pos: float = -2.5
+    open_pos: float = 4.0
+    close_pos: float = -5.0
     mit_kp: float = 2.0
     mit_kd: float = 0.1
-    settle_time: float = 3.0
+    settle_time: float = 4.0
 
 
 class VectorBH6ArmDriver:

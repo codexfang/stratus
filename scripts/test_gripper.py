@@ -45,7 +45,7 @@ mot.send_mit(0.0, 0.0, 2.0, 0.1, 0.0)
 time.sleep(2.0)
 
 print("\n=== MIT mode: open / close cycle ===")
-for target, name in [(2.0, "open"), (-2.5, "close"), (2.0, "open"), (-2.5, "close"), (0.0, "center")]:
+for target, name in [(4.0, "open"), (-5.0, "close"), (4.0, "open"), (-5.0, "close"), (0.0, "center")]:
     mot.send_mit(target, 0.0, 2.0, 0.1, 0.0)
     time.sleep(2.0)
     mot.request_feedback()

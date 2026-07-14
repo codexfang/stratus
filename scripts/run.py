@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Run Stratus pipeline."""
 from __future__ import annotations
 import argparse
 import logging
@@ -28,11 +27,11 @@ def main():
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--phone-url", default="")
     parser.add_argument("--no-arm", action="store_true")
-    parser.add_argument("--gripper-id", type=int, default=0, help="Gripper motor ID (0=disable)")
-    parser.add_argument("--gripper-open", type=float, default=0.38)
-    parser.add_argument("--gripper-close", type=float, default=-0.38)
-    parser.add_argument("--model", default="", help="Path to YOLO best.pt (overrides Rekognition)")
-    parser.add_argument("--conf", type=float, default=0.25, help="YOLO confidence threshold")
+    parser.add_argument("--gripper-id", type=int, default=0)
+    parser.add_argument("--gripper-open", type=float, default=0.40)
+    parser.add_argument("--gripper-close", type=float, default=-0.50)
+    parser.add_argument("--model", default="")
+    parser.add_argument("--conf", type=float, default=0.25)
     args = parser.parse_args()
 
     print("=== Stratus Pipeline ===")

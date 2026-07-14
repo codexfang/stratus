@@ -5,8 +5,6 @@ from stratus.core.arm_driver import TriageCommand
 
 
 class DummyClassifier:
-    """Cycles through bins A→B→C using distinct arm positions."""
-
     def __init__(self):
         self._count = 0
         self._bins = {
@@ -21,14 +19,11 @@ class DummyClassifier:
     def classify(self, frame: CameraFrame) -> TriageCommand:
         grade = ["bin_a", "bin_b", "bin_c"][self._count % 3]
         self._count += 1
-
         bin_cfg = self._bins[grade]
         return TriageCommand(
             action="pick_and_place",
             target_bin=grade,
-            # Pickup: center, slightly forward
             pickup_pose={"x": 0.25, "y": 0.0, "z": 0.15, "roll": 0, "pitch": 0.4, "yaw": 0},
-            # Drop: rotate to bin position
             drop_joints=bin_cfg["angles"],
             label=bin_cfg["label"],
         )

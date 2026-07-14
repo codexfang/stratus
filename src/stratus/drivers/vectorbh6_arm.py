@@ -21,11 +21,11 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 0.38
-    close_pos: float = -0.38
-    mit_kp: float = 1.0
+    open_pos: float = 0.40
+    close_pos: float = -0.50
+    mit_kp: float = 2.0
     mit_kd: float = 0.1
-    settle_time: float = 0.8
+    settle_time: float = 2.0
 
 
 class VectorBH6ArmDriver:
@@ -38,7 +38,7 @@ class VectorBH6ArmDriver:
 
     def connect(self) -> None:
         self._arm.connect()
-        self._arm.mode_pos_vel()
+        self._arm.mode_pos_vel(vlim=0.5)
         if self._gripper_cfg is not None:
             self._init_gripper()
         else:
@@ -55,8 +55,6 @@ class VectorBH6ArmDriver:
         try:
             from motorbridge import Mode
             mot = ctrl.add_damiao_motor(cfg.motor_id, cfg.feedback_id, cfg.model)
-
-            # Raise OT threshold aggressively and persist
             old_ot = mot.get_register_f32(2, 500)
             logger.info("Gripper OT threshold currently: %.1f°C", old_ot)
             mot.write_register_f32(2, 150.0)
@@ -80,7 +78,6 @@ class VectorBH6ArmDriver:
                     logger.info("Gripper attempt %d: pos=%.3f status=%d t_rot=%.1f",
                                 attempt, st.pos, st.status_code, st.t_rotor)
                     if st.status_code != 0 and st.status_code != 1:
-                        # In fault - clear and retry enable
                         mot.clear_error()
                         time.sleep(0.15)
                         mot.enable()
@@ -92,7 +89,6 @@ class VectorBH6ArmDriver:
                         time.sleep(0.2)
                         self._gripper_motor = mot
                         logger.info("Gripper ID %d enabled in MIT mode (timeout=5s)", cfg.motor_id)
-                        # Enable arm joints too (mot.enable() above only did gripper)
                         self._arm.enable()
                         logger.info("Arm joints enabled")
                         return

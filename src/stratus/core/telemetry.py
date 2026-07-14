@@ -5,7 +5,7 @@ from typing import Any, Protocol
 
 @dataclass
 class TelemetryEvent:
-    event_type: str  # "classification", "arm_action", "error"
+    event_type: str
     payload: dict[str, Any] = field(default_factory=dict)
 
 

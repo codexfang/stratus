@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Force gripper to rotate MUCH FARTHER — tries large position commands."""
 from __future__ import annotations
 import sys, time, logging
 from pathlib import Path
@@ -41,12 +40,9 @@ else:
     arm.disconnect()
     sys.exit(1)
 
-# Go to a known middle position first
 mot.send_pos_vel(0.0, 3.0)
 time.sleep(1.0)
 
-# Try commanding MUCH larger positions in POS_VEL mode
-# The 4310 can rotate multiple turns — PMAX=12.5 means ~2 turns
 print("\n=== POS_VEL — large position commands ===")
 for target in [1.0, 2.0, 3.0, 5.0, 10.0, -1.0, -2.0, -3.0, -5.0, -10.0, 0.0]:
     mot.send_pos_vel(target, 8.0)
@@ -59,12 +55,10 @@ for target in [1.0, 2.0, 3.0, 5.0, 10.0, -1.0, -2.0, -3.0, -5.0, -10.0, 0.0]:
         reached = "YES" if abs(st.pos - target) < 0.1 else "NEAR" if abs(st.pos - target) < 0.5 else "no"
         print(f"  target={target:6.1f} -> pos={st.pos:7.4f} torq={st.torq:7.3f} reached? {reached} status={st.status_code}")
 
-# Try MIT mode — spring-damper can push harder
 print("\n=== MIT mode — trying to go farther ===")
 mot.ensure_mode(Mode.MIT, 1000)
 time.sleep(0.3)
 for target in [3.0, 5.0, -3.0, -5.0, 8.0, -8.0, 0.0]:
-    # MIT: send_mit(target_pos, vel, kp, kd, feedforward_torque)
     mot.send_mit(target, 0.0, 2.0, 0.1, 0.0)
     time.sleep(2.0)
     mot.request_feedback()

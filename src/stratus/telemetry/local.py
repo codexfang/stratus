@@ -8,8 +8,6 @@ logger = logging.getLogger(__name__)
 
 
 class LocalTelemetry:
-    """Logs telemetry to stdout and optional JSONL file."""
-
     def __init__(self, log_path: str | Path | None = None):
         self._log_path = Path(log_path) if log_path else None
         self._file = None

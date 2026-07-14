@@ -1,13 +1,3 @@
-"""Phone camera via WiFi IP Webcam with flash control.
-
-Setup:
-  1. Install "IP Webcam" on Android (Play Store) or "ReCamera" on iPhone
-  2. Connect phone and Mac to same WiFi
-  3. Start the server on the app (it shows a URL like http://192.168.1.X:8080)
-  4. Pass that URL to this class
-
-Flash requires the app to support HTTP flash toggle (IP Webcam for Android does).
-"""
 from __future__ import annotations
 import time
 import cv2
@@ -17,8 +7,6 @@ from stratus.core.vision import Camera, CameraFrame
 
 
 class PhoneCamera:
-    """Wireless phone camera with flash control via IP Webcam."""
-
     def __init__(self, stream_url: str = "http://192.168.1.100:8080"):
         self._base = stream_url.rstrip("/")
         self._cap = None
@@ -33,7 +21,7 @@ class PhoneCamera:
         try:
             urllib.request.urlopen(f"{self._base}/enabletorch", timeout=2)
         except Exception:
-            pass  # ignore if flash not supported
+            pass
 
     def flash_off(self) -> None:
         try:
@@ -46,7 +34,7 @@ class PhoneCamera:
             raise RuntimeError("Camera not connected")
         if use_flash:
             self.flash_on()
-            time.sleep(0.3)  # let flash stabilize
+            time.sleep(0.3)
         ret, frame = self._cap.read()
         if use_flash:
             self.flash_off()

@@ -16,7 +16,7 @@ class ArmObservation:
 class DetectedObject:
     name: str
     confidence: float
-    left: float    # normalized 0-1
+    left: float
     top: float
     width: float
     height: float
@@ -24,11 +24,11 @@ class DetectedObject:
 
 @dataclass
 class TriageCommand:
-    action: str  # "pick_and_place", "home", "reject"
-    target_bin: Optional[str] = None  # "bin_a", "bin_b", "bin_c", "reject"
-    pickup_pose: Optional[dict] = None  # {"x": ..., "y": ..., "z": ...}
-    drop_pose: Optional[dict] = None  # Cartesian alternative
-    drop_joints: Optional[list] = None  # [deg]*6 — direct joint angles for drop
+    action: str
+    target_bin: Optional[str] = None
+    pickup_pose: Optional[dict] = None
+    drop_pose: Optional[dict] = None
+    drop_joints: Optional[list] = None
     label: str = ""
     detected_labels: list[str] = field(default_factory=list)
     detected_objects: list[DetectedObject] = field(default_factory=list)

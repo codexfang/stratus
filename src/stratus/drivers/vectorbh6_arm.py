@@ -21,7 +21,7 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 4.0
+    open_pos: float = 5.0
     close_pos: float = -5.0
     mit_kp: float = 2.0
     mit_kd: float = 0.1
@@ -154,22 +154,16 @@ class VectorBH6ArmDriver:
                      duration: float = 4.0) -> bool:
         if self._endpos is None:
             return False
-        ok = self._endpos.move_to_traj(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw,
-                                       duration=duration)
+        ok = self._endpos.move_to_ik(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw)
         if ok:
-            logger.info("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) traj ok (%.1fs)",
+            logger.info("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK ok, slewing (%.1fs)",
                         x, y, z, pitch, duration)
-            time.sleep(duration + 0.5)
+            self._slew_to_joints(self._endpos._q_target, duration)
             q, _, _ = self._arm.get_state()
             logger.info("move_to_pose done (joints=%s)", np.round(q, 3))
         else:
-            logger.warning("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) traj failed, fallback IK",
+            logger.warning("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK failed",
                            x, y, z, pitch)
-            ok = self._endpos.move_to_ik(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw)
-            if ok:
-                self._slew_to_joints(self._endpos._q_target, duration)
-                q, _, _ = self._arm.get_state()
-                logger.info("move_to_pose IK fallback done (joints=%s)", np.round(q, 3))
         return ok
 
     def _slew_to_joints(self, target: npt.NDArray[np.float64], duration: float = 4.0) -> None:

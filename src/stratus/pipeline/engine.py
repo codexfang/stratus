@@ -38,15 +38,41 @@ class StratusPipeline:
         self._last_h = 480
         self._last_w = 640
         self._bg_captured = False
+        self._current_objects: list[DetectedObject] = []
+        self._selected_idx: int = 0
+        cv2.namedWindow("Stratus – ITAD Sorting")
+        cv2.setMouseCallback("Stratus – ITAD Sorting", self._on_mouse)
 
-    def _draw_boxes(self, display: np.ndarray, objects: list[DetectedObject]) -> None:
-        h, w = display.shape[:2]
-        for obj in objects:
+    def _on_mouse(self, event: int, x: int, y: int, flags: int, param) -> None:
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+        h, w = self._last_h, self._last_w
+        if h == 0 or w == 0:
+            return
+        self._selected_idx = -1
+        for i, obj in enumerate(self._current_objects):
             x1 = int(obj.left * w)
             y1 = int(obj.top * h)
             x2 = int((obj.left + obj.width) * w)
             y2 = int((obj.top + obj.height) * h)
-            cv2.rectangle(display, (x1, y1), (x2, y2), GREEN, 2)
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                self._selected_idx = i
+                logger.info("Selected object %d: %s", i, obj.name)
+                break
+
+    def _draw_boxes(self, display: np.ndarray, objects: list[DetectedObject],
+                    highlight: int = -1) -> None:
+        h, w = display.shape[:2]
+        for i, obj in enumerate(objects):
+            x1 = int(obj.left * w)
+            y1 = int(obj.top * h)
+            x2 = int((obj.left + obj.width) * w)
+            y2 = int((obj.top + obj.height) * h)
+            color = (0, 255, 255) if i == highlight else GREEN
+            cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
+            if i == highlight:
+                cv2.putText(display, f"[{i}] {obj.name}", (x1, y1 - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
     def _draw_workspace(self, display: np.ndarray) -> None:
         h, w = display.shape[:2]
@@ -67,6 +93,8 @@ class StratusPipeline:
     def _classify(self, frame) -> TriageCommand | None:
         logger.info("Classifying...")
         cmd = self._classifier.classify(frame)
+        self._current_objects = cmd.detected_objects
+        self._selected_idx = 0
         logger.info(f"-> {cmd.label}  labels={cmd.detected_labels[:3]}")
         return cmd
 
@@ -82,19 +110,29 @@ class StratusPipeline:
             }))
 
     def _confirm(self, cmd: TriageCommand) -> bool:
-        name = cmd.detected_labels[0] if cmd.detected_labels else "item"
+        idx = self._selected_idx
+        if idx < 0 or idx >= len(cmd.detected_objects):
+            idx = 0
+        obj = cmd.detected_objects[idx]
+        name = obj.name
         for _ in range(300):
             frame = self._camera.read()
             if frame is None:
                 continue
             display = frame.image.copy()
             self._draw_workspace(display)
-            self._draw_boxes(display, cmd.detected_objects)
+            self._draw_boxes(display, cmd.detected_objects, highlight=idx)
             bin_name = BIN_NAMES.get(cmd.target_bin, cmd.target_bin)
-            self._bottom_bar(display, f"{name}  ->  {bin_name}", GREEN)
+            self._bottom_bar(display, f"[{idx}] {name}  ->  {bin_name}", GREEN)
             cv2.imshow("Stratus – ITAD Sorting", display)
             key = cv2.waitKey(50) & 0xFF
             if key == ord('y'):
+                cx = (obj.left + obj.width / 2)
+                cy = (obj.top + obj.height / 2)
+                cmd.pickup_pose = {"x": 0.08 + cx * 0.34, "y": -0.15 + cy * 0.30,
+                                   "z": 0.08, "roll": 0, "pitch": 0.4, "yaw": 0}
+                cmd.detected_labels = [obj.name]
+                cmd.detected_objects = [obj]
                 return True
             if key == ord('n'):
                 return False

@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--phone-url", default="")
     parser.add_argument("--no-arm", action="store_true")
     parser.add_argument("--gripper-id", type=int, default=0)
-    parser.add_argument("--gripper-open", type=float, default=4.0)
+    parser.add_argument("--gripper-open", type=float, default=5.0)
     parser.add_argument("--gripper-close", type=float, default=-5.0)
     parser.add_argument("--model", default="")
     parser.add_argument("--conf", type=float, default=0.25)

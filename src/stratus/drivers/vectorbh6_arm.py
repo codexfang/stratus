@@ -66,7 +66,7 @@ class VectorBH6ArmDriver:
             self._endpos._q_target,
             kp=mit_kp, kd=mit_kd, request_feedback=False,
         )
-        self._arm.start_control_loop(self._endpos._loop_cb)
+        self._arm.start_control_loop(self._endpos._loop_cb, rate=50)
         self._endpos._running = True
 
     def _init_gripper(self) -> None:
@@ -148,20 +148,35 @@ class VectorBH6ArmDriver:
         self._arm.mit(pos=positions)
 
     def move_to_pose(self, x: float, y: float, z: float,
-                     roll: float = 0, pitch: float = 0, yaw: float = 0) -> bool:
+                     roll: float = 0, pitch: float = 0, yaw: float = 0,
+                     duration: float = 2.0) -> bool:
         if self._endpos is None:
             return False
-        ok = self._endpos.move_to_ik(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw)
+        ok = self._endpos.move_to_traj(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw,
+                                       duration=duration)
         if ok:
-            logger.info("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK ok",
-                        x, y, z, pitch)
-            time.sleep(2.0)
+            logger.info("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) traj ok (%.1fs)",
+                        x, y, z, pitch, duration)
+            time.sleep(duration + 0.5)
             q, _, _ = self._arm.get_state()
             logger.info("move_to_pose done (joints=%s)", np.round(q, 3))
         else:
-            logger.warning("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK failed",
+            logger.warning("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) traj failed, fallback IK",
                            x, y, z, pitch)
+            ok = self._endpos.move_to_ik(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw)
+            if ok:
+                self._slew_to_joints(self._endpos._q_target, duration)
+                q, _, _ = self._arm.get_state()
+                logger.info("move_to_pose IK fallback done (joints=%s)", np.round(q, 3))
         return ok
+
+    def _slew_to_joints(self, target: npt.NDArray[np.float64], duration: float = 2.0) -> None:
+        q_start, _, _ = self._arm.get_state()
+        n = max(1, int(duration / 0.05))
+        for i in range(1, n + 1):
+            alpha = i / n
+            self._endpos._q_target[:] = q_start + alpha * (target - q_start)
+            time.sleep(0.05)
 
     def execute_triage(self, command: TriageCommand) -> bool:
         if not command.pickup_pose:
@@ -195,20 +210,17 @@ class VectorBH6ArmDriver:
         if command.drop_joints is not None:
             target = np.deg2rad(command.drop_joints)
             logger.info("[triage] drop to joints %s", target)
-            self.send_joint_positions(target)
-            time.sleep(1.5)
+            self._slew_to_joints(target, duration=2.0)
+            time.sleep(0.5)
         elif command.drop_pose:
-            self.move_to_pose(**command.drop_pose)
-            time.sleep(0.3)
+            self.move_to_pose(**command.drop_pose, duration=2.0)
 
         logger.info("[triage] release")
         self.gripper_open()
 
-        if command.drop_joints is not None:
-            self.send_joint_positions(np.deg2rad([0, 0, 0, 0, 0, 0]))
-        else:
-            self.send_joint_positions(np.zeros(6))
-        time.sleep(1)
+        logger.info("[triage] return home")
+        self._slew_to_joints(np.zeros(6), duration=2.0)
+        time.sleep(0.5)
         logger.info("[triage] done")
         return True
 

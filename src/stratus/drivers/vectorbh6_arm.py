@@ -26,6 +26,7 @@ class GripperConfig:
     mit_kp: float = 10.0
     mit_kd: float = 1.0
     settle_time: float = 4.0
+    approach_inset: float = 0.03
 
 
 class VectorBH6ArmDriver:
@@ -193,6 +194,16 @@ class VectorBH6ArmDriver:
         self._gripper_cmd(self._gripper_cfg.close_pos)
         logger.info("[gripper] close -> %.2f", self._gripper_cfg.close_pos)
 
+    def gripper_grip(self) -> None:
+        if self._gripper_motor is None:
+            logger.info("[gripper] no motor")
+            return
+        grip_pos = self._gripper_cfg.close_pos
+        if grip_pos < -2.0:
+            grip_pos = -2.0
+        self._gripper_cmd(grip_pos)
+        logger.info("[gripper] grip -> %.2f", grip_pos)
+
     def get_observation(self) -> ArmObservation:
         pos, vel, torq = self._arm.get_state()
         return ArmObservation(
@@ -249,6 +260,7 @@ class VectorBH6ArmDriver:
         py = pu.get("y", 0)
         pz = pu.get("z", 0)
         pitch = pu.get("pitch", 0)
+        inset = self._gripper_cfg.approach_inset if self._gripper_cfg else 0.03
 
         logger.info("[triage] start: %s", command.detected_labels[:3])
 
@@ -258,24 +270,22 @@ class VectorBH6ArmDriver:
             logger.warning("pre-approach failed")
             return False
 
-        approach_z = pz + 0.10
-        logger.info("[triage] approach descend (z=%.3f)", approach_z)
-        if not self.move_to_pose(x=px, y=py, z=approach_z, roll=0, pitch=pitch, yaw=0, duration=3.0):
-            logger.warning("approach failed")
+        logger.info("[triage] descend to pickup (z=%.3f)", pz)
+        if not self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0, duration=3.0):
+            logger.warning("descend failed")
             return False
 
         logger.info("[triage] open gripper")
         self.gripper_open()
 
-        logger.info("[triage] descend to pickup (z=%.3f)", pz)
-        self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0, duration=3.0)
+        logger.info("[triage] move in forward (%.3f m)", inset)
+        self.move_to_pose(x=px + inset, y=py, z=pz, roll=0, pitch=pitch, yaw=0, duration=1.5)
 
-        logger.info("[triage] close gripper")
-        self.gripper_close()
+        logger.info("[triage] grip object")
+        self.gripper_grip()
 
-        lift_z = pz + 0.10
-        logger.info("[triage] lift (z=%.3f)", lift_z)
-        self.move_to_pose(x=px, y=py, z=lift_z, roll=0, pitch=pitch, yaw=0, duration=3.0)
+        logger.info("[triage] lift (z=%.3f)", pre_z)
+        self.move_to_pose(x=px + inset, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0, duration=2.0)
 
         if command.drop_joints is not None:
             target = np.deg2rad(command.drop_joints)

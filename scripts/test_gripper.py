@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gripper test — uses POS_VEL mode with proper PI gains (matching library)."""
+"""Force gripper to rotate MUCH FARTHER — tries large position commands."""
 from __future__ import annotations
 import sys, time, logging
 from pathlib import Path
@@ -12,72 +12,67 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 arm = VBArm()
 arm.connect()
 ctrl = arm._ctrl_map["damiao"]
-mot = ctrl.add_damiao_motor(7, 7, "4310")
+mot = ctrl.add_damiao_motor(7, 0x17, "4310")
 
-# Read initial state
-mot.request_feedback()
-ctrl.poll_feedback_once()
-st = mot.get_state()
-if st:
-    print(f"INIT: pos={st.pos:.4f} status={st.status_code} t_rot={st.t_rotor:.1f}°C")
-
-# Clear error + enable
-print("Clearing error...")
+mot.write_register_f32(2, 150.0)
+time.sleep(0.1)
+mot.store_parameters()
 mot.clear_error()
-time.sleep(0.3)
-ctrl.enable_all()
+time.sleep(0.1)
+mot.enable()
 time.sleep(0.3)
 
 for attempt in range(30):
     mot.request_feedback()
+    time.sleep(0.02)
+    ctrl.poll_feedback_once()
+    st = mot.get_state()
+    if st and st.status_code == 1:
+        print(f"ENABLED, init pos={st.pos:.4f}")
+        break
+    if st and st.status_code != 0:
+        mot.clear_error()
+        time.sleep(0.1)
+        mot.enable()
+        time.sleep(0.3)
+    time.sleep(0.15)
+else:
+    print("Failed to enable")
+    arm.disconnect()
+    sys.exit(1)
+
+# Go to a known middle position first
+mot.send_pos_vel(0.0, 3.0)
+time.sleep(1.0)
+
+# Try commanding MUCH larger positions in POS_VEL mode
+# The 4310 can rotate multiple turns — PMAX=12.5 means ~2 turns
+print("\n=== POS_VEL — large position commands ===")
+for target in [1.0, 2.0, 3.0, 5.0, 10.0, -1.0, -2.0, -3.0, -5.0, -10.0, 0.0]:
+    mot.send_pos_vel(target, 8.0)
+    time.sleep(2.0)
+    mot.request_feedback()
+    time.sleep(0.02)
     ctrl.poll_feedback_once()
     st = mot.get_state()
     if st:
-        print(f"  Attempt {attempt}: status={st.status_code} t_rot={st.t_rotor:.1f}°C")
-        if st.status_code == 1:
-            print(">>> ENABLED!\n")
-            break
-        if st.status_code == 12:
-            # Still over-temp - increase threshold
-            print("  Over-temp, raising OT threshold to 120°C...")
-            mot.write_register_f32(2, 120.0)
-            time.sleep(0.2)
-            mot.clear_error()
-            time.sleep(0.2)
-            ctrl.enable_all()
-            time.sleep(0.3)
-    time.sleep(0.15)
+        reached = "YES" if abs(st.pos - target) < 0.1 else "NEAR" if abs(st.pos - target) < 0.5 else "no"
+        print(f"  target={target:6.1f} -> pos={st.pos:7.4f} torq={st.torq:7.3f} reached? {reached} status={st.status_code}")
 
-if st and st.status_code == 1:
-    # Stay in POS_VEL mode (arm already set it)
-    arm.mode_pos_vel()
-    time.sleep(0.2)
-
-    # Write POS_VEL gains (same as library defaults)
-    print("Setting POS_VEL gains (pos_kp=50, pos_ki=1, vel_kp=0.0008, vel_ki=0.002)")
-    mot.write_register_f32(25, 0.0008)  # vel_kp
-    mot.write_register_f32(26, 0.002)   # vel_ki
-    mot.write_register_f32(27, 50.0)    # pos_kp
-    mot.write_register_f32(28, 1.0)     # pos_ki
-    time.sleep(0.1)
-
-    # Ensure POS_VEL mode on gripper motor
-    mot.ensure_mode(Mode.POS_VEL, 1000)
-    time.sleep(0.2)
-
-    print("\n=== POS_VEL mode - sweeping positions ===")
-    positions = [0.5, 0.0, 0.8, 0.0, 0.3, 0.0, -0.2, 0.0]
-    for target in positions:
-        mot.send_pos_vel(target, 3.0)
-        time.sleep(1.0)
-        mot.request_feedback()
-        ctrl.poll_feedback_once()
-        st = mot.get_state()
-        if st:
-            print(f"  target={target:5.2f} -> pos={st.pos:.4f} torq={st.torq:.3f} status={st.status_code} t_rot={st.t_rotor:.1f}°C")
-        else:
-            print(f"  target={target:5.2f} -> NO FEEDBACK")
-else:
-    print(f"\nStuck at status={st.status_code if st else None}.")
+# Try MIT mode — spring-damper can push harder
+print("\n=== MIT mode — trying to go farther ===")
+mot.ensure_mode(Mode.MIT, 1000)
+time.sleep(0.3)
+for target in [3.0, 5.0, -3.0, -5.0, 8.0, -8.0, 0.0]:
+    # MIT: send_mit(target_pos, vel, kp, kd, feedforward_torque)
+    mot.send_mit(target, 0.0, 2.0, 0.1, 0.0)
+    time.sleep(2.0)
+    mot.request_feedback()
+    time.sleep(0.02)
+    ctrl.poll_feedback_once()
+    st = mot.get_state()
+    if st:
+        reached = abs(st.pos - target) < 0.1
+        print(f"  MIT target={target:6.1f} -> pos={st.pos:7.4f} torq={st.torq:7.3f} reached={reached} status={st.status_code}")
 
 arm.disconnect()

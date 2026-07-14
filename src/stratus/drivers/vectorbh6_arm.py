@@ -19,16 +19,13 @@ logger = logging.getLogger(__name__)
 @dataclass
 class GripperConfig:
     motor_id: int = 7
-    feedback_id: int = 7
+    feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 0.6
-    close_pos: float = 0.0
-    vlim: float = 3.0
+    open_pos: float = 0.38
+    close_pos: float = -0.38
+    mit_kp: float = 1.0
+    mit_kd: float = 0.1
     settle_time: float = 0.8
-    pos_kp: float = 50.0
-    pos_ki: float = 1.0
-    vel_kp: float = 0.0008
-    vel_ki: float = 0.002
 
 
 class VectorBH6ArmDriver:
@@ -58,38 +55,48 @@ class VectorBH6ArmDriver:
         try:
             from motorbridge import Mode
             mot = ctrl.add_damiao_motor(cfg.motor_id, cfg.feedback_id, cfg.model)
+
+            # Raise OT threshold aggressively and persist
+            old_ot = mot.get_register_f32(2, 500)
+            logger.info("Gripper OT threshold currently: %.1f°C", old_ot)
+            mot.write_register_f32(2, 150.0)
+            time.sleep(0.2)
+            check_ot = mot.get_register_f32(2, 500)
+            logger.info("Gripper OT threshold now: %.1f°C", check_ot)
+            mot.store_parameters()
+            time.sleep(0.1)
+
             mot.clear_error()
             time.sleep(0.1)
-            self._arm.enable()
+            mot.enable()
             time.sleep(0.3)
 
             for attempt in range(30):
-                ctrl.poll_feedback_once()
                 mot.request_feedback()
-                time.sleep(0.05)
+                time.sleep(0.02)
                 ctrl.poll_feedback_once()
                 st = mot.get_state()
                 if st is not None:
                     logger.info("Gripper attempt %d: pos=%.3f status=%d t_rot=%.1f",
                                 attempt, st.pos, st.status_code, st.t_rotor)
-                    if st.status_code == 12:
-                        mot.write_register_f32(2, 120.0)
-                        time.sleep(0.1)
+                    if st.status_code != 0 and st.status_code != 1:
+                        # In fault - clear and retry enable
                         mot.clear_error()
-                        time.sleep(0.1)
-                        self._arm.enable()
-                        time.sleep(0.2)
+                        time.sleep(0.15)
+                        mot.enable()
+                        time.sleep(0.3)
                     if st.status_code == 1:
-                        mot.write_register_f32(25, cfg.vel_kp)
-                        mot.write_register_f32(26, cfg.vel_ki)
-                        mot.write_register_f32(27, cfg.pos_kp)
-                        mot.write_register_f32(28, cfg.pos_ki)
-                        mot.ensure_mode(Mode.POS_VEL, 1000)
+                        mot.set_can_timeout_ms(5000)
+                        time.sleep(0.1)
+                        mot.ensure_mode(Mode.MIT, 1000)
                         time.sleep(0.2)
                         self._gripper_motor = mot
-                        logger.info("Gripper ID %d enabled in POS_VEL mode", cfg.motor_id)
+                        logger.info("Gripper ID %d enabled in MIT mode (timeout=5s)", cfg.motor_id)
+                        # Enable arm joints too (mot.enable() above only did gripper)
+                        self._arm.enable()
+                        logger.info("Arm joints enabled")
                         return
-                time.sleep(0.1)
+                time.sleep(0.15)
 
             logger.warning("Gripper ID %d failed to enable (status != 1 after 30 attempts)", cfg.motor_id)
             self._gripper_motor = mot
@@ -101,10 +108,10 @@ class VectorBH6ArmDriver:
             return
         cfg = self._gripper_cfg
         try:
-            self._gripper_motor.send_pos_vel(pos, cfg.vlim)
+            self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
             time.sleep(cfg.settle_time)
         except Exception as e:
-            logger.warning("gripper pos_vel failed: %s", e)
+            logger.warning("gripper mit failed: %s", e)
 
     def gripper_open(self) -> None:
         if self._gripper_motor is None:
@@ -133,11 +140,16 @@ class VectorBH6ArmDriver:
                      roll: float = 0, pitch: float = 0, yaw: float = 0) -> bool:
         if self._endpos is None:
             return False
-        ok = self._endpos.move_to_traj(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw, duration=2.0)
+        ok = self._endpos.move_to_ik(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw)
         if ok:
-            deadline = time.monotonic() + 5.0
-            while self._endpos._moving and time.monotonic() < deadline:
-                time.sleep(0.05)
+            logger.info("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK ok",
+                        x, y, z, pitch)
+            time.sleep(2.0)
+            q, _, _ = self._arm.get_state()
+            logger.info("move_to_pose done (joints=%s)", np.round(q, 3))
+        else:
+            logger.warning("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK failed",
+                           x, y, z, pitch)
         return ok
 
     def execute_triage(self, command: TriageCommand) -> bool:
@@ -146,30 +158,37 @@ class VectorBH6ArmDriver:
         pu = command.pickup_pose
         approach_z = pu.get("z", 0) + 0.07
 
+        logger.info("[triage] start: %s", command.detected_labels[:3])
         self.gripper_open()
 
+        logger.info("[triage] approach (z=%.3f)", approach_z)
         if not self.move_to_pose(x=pu.get("x", 0), y=pu.get("y", 0), z=approach_z,
                                  roll=pu.get("roll", 0), pitch=pu.get("pitch", 0), yaw=pu.get("yaw", 0)):
             logger.warning("approach failed")
             return False
         time.sleep(0.3)
 
+        logger.info("[triage] pickup (z=%.3f)", pu.get("z", 0))
         self.move_to_pose(**pu)
         time.sleep(0.5)
         self.gripper_close()
 
         lift_z = pu.get("z", 0) + 0.07
+        logger.info("[triage] lift (z=%.3f)", lift_z)
         self.move_to_pose(x=pu.get("x", 0), y=pu.get("y", 0), z=lift_z,
                           roll=pu.get("roll", 0), pitch=pu.get("pitch", 0), yaw=pu.get("yaw", 0))
         time.sleep(0.3)
 
         if command.drop_joints is not None:
             target = np.deg2rad(command.drop_joints)
+            logger.info("[triage] drop to joints %s", target)
             self.send_joint_positions(target)
             time.sleep(1.5)
         elif command.drop_pose:
             self.move_to_pose(**command.drop_pose)
             time.sleep(0.3)
+
+        logger.info("[triage] release")
         self.gripper_open()
 
         if command.drop_joints is not None:
@@ -177,6 +196,7 @@ class VectorBH6ArmDriver:
         else:
             self.send_joint_positions(np.zeros(6))
         time.sleep(1)
+        logger.info("[triage] done")
         return True
 
     def disable(self) -> None:

@@ -98,8 +98,58 @@ class StratusPipeline:
         logger.info(f"-> {cmd.label}  labels={cmd.detected_labels[:3]}")
         return cmd
 
+    def _servo_refine(self, cmd: TriageCommand) -> None:
+        if not self._arm or not cmd.pickup_pose:
+            return
+        if self._camera is None:
+            return
+        pu = cmd.pickup_pose
+        pre_z = max(pu["z"] + 0.20, 0.30)
+        pitch = pu.get("pitch", 0)
+        target_name = cmd.detected_labels[0] if cmd.detected_labels else ""
+
+        self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=5.0)
+
+        for iteration in range(2):
+            frame = self._camera.read()
+            if frame is None:
+                break
+            refined = self._classifier.classify(frame)
+            best = None
+            for obj in refined.detected_objects:
+                if obj.name == target_name:
+                    best = obj
+                    break
+            if best is None:
+                break
+            cx = best.left + best.width / 2
+            cy = best.top + best.height / 2
+            mo = getattr(self._classifier, '_map_offset_x', 0.15)
+            ms = getattr(self._classifier, '_map_scale_x', 0.50)
+            mox = getattr(self._classifier, '_map_offset_y', -0.20)
+            msy = getattr(self._classifier, '_map_scale_y', 0.40)
+            new_x = mo + cx * ms
+            new_y = mox + cy * msy
+            dx = new_x - pu["x"]
+            dy = new_y - pu["y"]
+            max_correction = 0.15
+            if abs(dx) > max_correction or abs(dy) > max_correction:
+                logger.warning("[servo] large delta (%.3f, %.3f), clamping to %.1f cm", dx, dy, max_correction * 100)
+                dx = max(-max_correction, min(max_correction, dx))
+                dy = max(-max_correction, min(max_correction, dy))
+                new_x = pu["x"] + dx
+                new_y = pu["y"] + dy
+            logger.info("[servo] iter=%d target=%s pixel=(%.3f,%.3f) world=(%.3f,%.3f) delta=(%.3f,%.3f)",
+                        iteration, target_name, cx, cy, new_x, new_y, dx, dy)
+            pu["x"] = new_x
+            pu["y"] = new_y
+            self._arm.move_to_pose(new_x, new_y, pre_z, pitch=pitch, duration=3.0)
+
+        cmd.pickup_refined = True
+
     def _exec_and_telemetry(self, cmd: TriageCommand) -> None:
         if self._arm:
+            self._servo_refine(cmd)
             self._arm.execute_triage(cmd)
         if self._telemetry:
             drop = cmd.drop_joints or cmd.drop_pose

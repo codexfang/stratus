@@ -265,10 +265,14 @@ class VectorBH6ArmDriver:
         logger.info("[triage] start: %s", command.detected_labels[:3])
 
         pre_z = max(pz + 0.20, 0.30)
-        logger.info("[triage] pre-approach up (z=%.3f)", pre_z)
-        if not self.move_to_pose(x=px, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0, duration=5.0):
-            logger.warning("pre-approach failed")
-            return False
+
+        if not command.pickup_refined:
+            logger.info("[triage] pre-approach up (z=%.3f)", pre_z)
+            if not self.move_to_pose(x=px, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0, duration=5.0):
+                logger.warning("pre-approach failed")
+                return False
+        else:
+            logger.info("[triage] pickup already refined by camera, skipping pre-approach")
 
         logger.info("[triage] open gripper (above object)")
         self.gripper_open()

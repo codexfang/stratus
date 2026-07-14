@@ -60,8 +60,8 @@ class VectorBH6ArmDriver:
             if st is not None:
                 logger.info("Joint %s: status=%d pos=%.3f", jc.name, st.status_code, st.pos)
         self._endpos = ArmEndPos(self._arm)
-        gentle_kp = np.array([10.0, 10.0, 10.0, 3.0, 3.0, 3.0], dtype=np.float64)
-        gentle_kd = np.array([2.0, 2.0, 2.0, 0.5, 0.5, 0.5], dtype=np.float64)
+        gentle_kp = np.array([10.0, 10.0, 10.0, 5.0, 5.0, 5.0], dtype=np.float64)
+        gentle_kd = np.array([2.0, 2.0, 2.0, 1.0, 1.0, 1.0], dtype=np.float64)
         q_curr, _, _ = self._arm.get_state()
         self._endpos._q_target[:] = q_curr
         self._endpos._loop_cb = lambda arm, dt: arm.mit(
@@ -122,7 +122,18 @@ class VectorBH6ArmDriver:
         cfg = self._gripper_cfg
         try:
             self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
-            time.sleep(cfg.settle_time)
+            time.sleep(0.5)
+            for _ in range(5):
+                self._gripper_motor.request_feedback()
+                time.sleep(0.02)
+                ctrl = self._arm._ctrl_map.get("damiao")
+                if ctrl:
+                    ctrl.poll_feedback_once()
+                st = self._gripper_motor.get_state()
+                if st is not None:
+                    logger.info("[gripper] pos=%.3f status=%d", st.pos, st.status_code)
+                    break
+                time.sleep(0.1)
         except Exception as e:
             logger.warning("gripper mit failed: %s", e)
 
@@ -156,9 +167,10 @@ class VectorBH6ArmDriver:
             return False
         ok = self._endpos.move_to_ik(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw)
         if ok:
-            logger.info("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK ok, slewing (%.1fs)",
-                        x, y, z, pitch, duration)
-            self._slew_to_joints(self._endpos._q_target, duration)
+            q_ik = self._endpos._q_target.copy()
+            logger.info("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK ok (joints=%s), slewing (%.1fs)",
+                        x, y, z, pitch, np.round(q_ik, 3), duration)
+            self._slew_to_joints(q_ik, duration)
             q, _, _ = self._arm.get_state()
             logger.info("move_to_pose done (joints=%s)", np.round(q, 3))
         else:

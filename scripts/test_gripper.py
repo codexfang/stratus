@@ -12,12 +12,11 @@ arm = VBArm()
 arm.connect()
 ctrl = arm._ctrl_map["damiao"]
 mot = ctrl.add_damiao_motor(7, 0x17, "4310")
-
+mot.clear_error()
+time.sleep(0.1)
 mot.write_register_f32(2, 150.0)
 time.sleep(0.1)
 mot.store_parameters()
-mot.clear_error()
-time.sleep(0.1)
 mot.enable()
 time.sleep(0.3)
 
@@ -40,25 +39,13 @@ else:
     arm.disconnect()
     sys.exit(1)
 
-mot.send_pos_vel(0.0, 3.0)
-time.sleep(1.0)
-
-print("\n=== POS_VEL — large position commands ===")
-for target in [1.0, 2.0, 3.0, 5.0, 10.0, -1.0, -2.0, -3.0, -5.0, -10.0, 0.0]:
-    mot.send_pos_vel(target, 8.0)
-    time.sleep(2.0)
-    mot.request_feedback()
-    time.sleep(0.02)
-    ctrl.poll_feedback_once()
-    st = mot.get_state()
-    if st:
-        reached = "YES" if abs(st.pos - target) < 0.1 else "NEAR" if abs(st.pos - target) < 0.5 else "no"
-        print(f"  target={target:6.1f} -> pos={st.pos:7.4f} torq={st.torq:7.3f} reached? {reached} status={st.status_code}")
-
-print("\n=== MIT mode — trying to go farther ===")
 mot.ensure_mode(Mode.MIT, 1000)
 time.sleep(0.3)
-for target in [3.0, 5.0, -3.0, -5.0, 8.0, -8.0, 0.0]:
+mot.send_mit(0.0, 0.0, 2.0, 0.1, 0.0)
+time.sleep(2.0)
+
+print("\n=== MIT mode: open / close cycle ===")
+for target, name in [(0.40, "open"), (-0.50, "close"), (0.40, "open"), (-0.50, "close"), (0.0, "center")]:
     mot.send_mit(target, 0.0, 2.0, 0.1, 0.0)
     time.sleep(2.0)
     mot.request_feedback()
@@ -67,6 +54,6 @@ for target in [3.0, 5.0, -3.0, -5.0, 8.0, -8.0, 0.0]:
     st = mot.get_state()
     if st:
         reached = abs(st.pos - target) < 0.1
-        print(f"  MIT target={target:6.1f} -> pos={st.pos:7.4f} torq={st.torq:7.3f} reached={reached} status={st.status_code}")
+        print(f"  MIT {name:6s} target={target:5.2f} -> pos={st.pos:7.4f} torq={st.torq:7.3f} reached={reached} status={st.status_code}")
 
 arm.disconnect()

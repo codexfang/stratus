@@ -18,5 +18,11 @@ certs/
 data/logs/
 *.key
 *.pem
+
+# Model files (downloaded, not tracked)
+*.pt
+models/weights/
+weights/
+colab_training.py
 *.crt
 .env

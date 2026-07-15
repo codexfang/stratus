@@ -49,6 +49,7 @@ class StratusPipeline:
         self._arm_frame_counter = 0
         self._update_preview_counter = 0
         cv2.namedWindow("Stratus")
+        cv2.setMouseCallback("Stratus", self._on_mouse)
 
     def _update_preview(self) -> None:
         """Read both cameras and refresh the combined display.
@@ -64,7 +65,6 @@ class StratusPipeline:
             self._last_arm_frame = self._arm_camera.read()
         self._show_both(display, self._last_arm_frame)
         cv2.waitKey(1)
-        cv2.setMouseCallback("Stratus", self._on_mouse)
 
     def _on_mouse(self, event: int, x: int, y: int, flags: int, param) -> None:
         if event != cv2.EVENT_LBUTTONDOWN:
@@ -195,8 +195,8 @@ class StratusPipeline:
         cmd.pickup_refined = True
 
     def _micro_adjust(self, cmd: TriageCommand) -> None:
-        """After pre-approach, descend to 10 cm above object, read arm camera ONCE,
-        apply a single micro-correction, then set pickup_pose so execute_triage
+        """Open gripper, descend to 10 cm above object, read arm camera ONCE,
+        apply a dampened XY correction, then set pickup_refined so execute_triage
         goes straight to pickup z."""
         if not self._arm or not cmd.pickup_pose:
             return
@@ -205,9 +205,7 @@ class StratusPipeline:
         pu = cmd.pickup_pose
         pitch = pu.get("pitch", 0)
         pz = pu.get("z", 0.15)
-        pre_z = max(pz + 0.20, 0.30)
         approach_z = pz + 0.10
-
         target_name = cmd.detected_labels[0] if cmd.detected_labels else ""
 
         self._arm.gripper_open()
@@ -217,9 +215,7 @@ class StratusPipeline:
 
         frame = self._arm_camera.read()
         if frame is None:
-            logger.warning("[micro] arm cam read failed, using rough position")
-            self._arm.move_to_pose(pu["x"], pu["y"], pz, pitch=pitch, duration=2.0,
-                                   frame_cb=self._update_preview)
+            logger.warning("[micro] arm cam read failed, using workspace position")
             return
 
         refined = self._classifier.classify(frame)
@@ -237,37 +233,36 @@ class StratusPipeline:
             logger.warning("[micro] target '%s' not found, using closest '%s'",
                            target_name, best.name)
         if best is None:
-            logger.warning("[micro] no objects in arm cam at close range, descent without correction")
-            self._arm.move_to_pose(pu["x"], pu["y"], pz, pitch=pitch, duration=2.0,
-                                   frame_cb=self._update_preview)
+            logger.warning("[micro] no objects in arm cam")
             return
 
         hfov_rad = np.deg2rad(self._arm_cam_fov)
         ox = best.left + best.width / 2
         oy = best.top + best.height / 2
-        dx_px = ox - 0.5
-        dy_px = oy - 0.5
-
+        ih, iw = frame.image.shape[:2]
+        vfov_rad = hfov_rad * ih / iw
         cam_h = approach_z - pz
         if cam_h <= 0.01:
             cam_h = 0.10
-        ih, iw = frame.image.shape[:2]
-        vfov_rad = hfov_rad * ih / iw
         scale_x = cam_h * 2 * np.tan(hfov_rad / 2)
         scale_y = cam_h * 2 * np.tan(vfov_rad / 2)
-        dx = dx_px * scale_x
-        dy = dy_px * scale_y
+        dx = (ox - 0.5) * scale_x
+        dy = (oy - 0.5) * scale_y
+        damping = 0.3
+        dx *= damping
+        dy *= damping
 
         obj_w_m = best.width * scale_x
         pu["inset"] = min(max(obj_w_m * 0.4, 0.01), 0.08)
 
-        logger.info("[micro] obj=(%.3f,%.3f) px_offset=(%.3f,%.3f) corr=(%.3f,%.3f)m "
-                    "size=%.3fm inset=%.3f", ox, oy, dx_px, dy_px, dx, dy, obj_w_m, pu["inset"])
+        logger.info("[micro] obj=(%.3f,%.3f) corr=(%.3f,%.3f)m damp=%.1f size=%.3fm inset=%.3f",
+                    ox, oy, dx, dy, damping, obj_w_m, pu["inset"])
 
-        pu["x"] += dx
-        pu["y"] += dy
-        self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch, duration=1.5,
-                               frame_cb=self._update_preview)
+        if abs(dx) > 0.002 or abs(dy) > 0.002:
+            pu["x"] += dx
+            pu["y"] += dy
+            self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch,
+                                   duration=1.5, frame_cb=self._update_preview)
 
     def _exec_and_telemetry(self, cmd: TriageCommand) -> None:
         if self._arm:
@@ -283,20 +278,23 @@ class StratusPipeline:
             }))
 
     def _confirm(self, cmd: TriageCommand) -> bool:
-        idx = self._selected_idx
-        if idx < 0 or idx >= len(cmd.detected_objects):
-            idx = 0
-        obj = cmd.detected_objects[idx]
-        name = obj.name
+        if not cmd.detected_objects:
+            logger.warning("[confirm] no detected objects")
+            return False
         for _ in range(300):
             frame = self._camera.read()
             if frame is None:
                 continue
+            idx = self._selected_idx
+            if idx < 0 or idx >= len(cmd.detected_objects):
+                idx = 0
+            obj = cmd.detected_objects[idx]
+            name = obj.name
             display = frame.image.copy()
             self._draw_workspace(display)
             self._draw_boxes(display, cmd.detected_objects, highlight=idx)
             bin_name = BIN_NAMES.get(cmd.target_bin, cmd.target_bin)
-            self._bottom_bar(display, f"[{idx}] {name}  ->  {bin_name}", GREEN)
+            self._bottom_bar(display, f"[{idx}] {name}  ->  {bin_name} — Click object, Y=pick N=skip", GREEN)
             if self._arm_camera is not None and self._arm_frame_counter % 10 == 0:
                 self._last_arm_frame = self._arm_camera.read()
             self._show_both(display, self._last_arm_frame)
@@ -388,7 +386,7 @@ class StratusPipeline:
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     raise KeyboardInterrupt()
 
-            if cmd is not None and cmd.action == "pick_and_place" and cmd.detected_labels:
+            if cmd is not None and cmd.action == "pick_and_place" and cmd.detected_labels and cmd.detected_objects:
                 if self._confirm(cmd):
                     self._exec_and_telemetry(cmd)
                     logger.info("Picked.\n")

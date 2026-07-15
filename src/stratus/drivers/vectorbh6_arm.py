@@ -65,12 +65,10 @@ class VectorBH6ArmDriver:
         self._endpos = ArmEndPos(self._arm)
         self._mit_kp = np.array([100.0, 100.0, 100.0, 18.0, 18.0, 18.0], dtype=np.float64)
         self._mit_kd = np.array([8.0, 8.0, 8.0, 2.0, 2.0, 2.0], dtype=np.float64)
+        self._gripper_hold_target = None
         q_curr, _, _ = self._arm.get_state()
         self._endpos._q_target[:] = q_curr
-        self._endpos._loop_cb = lambda ctrl, dt: self._arm.mit(
-            self._endpos._q_target,
-            kp=self._mit_kp, kd=self._mit_kd, request_feedback=False,
-        )
+        self._endpos._loop_cb = lambda ctrl, dt: self._arm_loop(ctrl, dt)
         self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
         self._endpos._running = True
 
@@ -139,6 +137,17 @@ class VectorBH6ArmDriver:
         except Exception as e:
             logger.warning("Gripper init failed: %s", e)
 
+    def _arm_loop(self, ctrl, dt) -> None:
+        self._arm.mit(self._endpos._q_target,
+                      kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
+        if self._gripper_hold_target is not None and self._gripper_motor is not None:
+            try:
+                self._gripper_motor.send_mit(self._gripper_hold_target, 0.0,
+                                              self._gripper_cfg.mit_kp,
+                                              self._gripper_cfg.mit_kd, 0.0)
+            except Exception:
+                pass
+
     def _gripper_cmd(self, pos: float) -> bool:
         if self._gripper_motor is None:
             return False
@@ -197,35 +206,63 @@ class VectorBH6ArmDriver:
         logger.warning("[gripper] cmd to %.1f failed after 3 retries", pos)
         return False
 
-    def gripper_open(self) -> None:
+    def gripper_open(self) -> bool:
         if self._gripper_motor is None:
             logger.info("[gripper] no motor")
-            return
-        ok = self._gripper_cmd(self._gripper_cfg.open_pos)
-        logger.info("[gripper] open -> %.2f %s", self._gripper_cfg.open_pos,
+            return False
+        cfg = self._gripper_cfg
+        self._gripper_hold_target = cfg.open_pos
+        ok = self._gripper_cmd(cfg.open_pos)
+        logger.info("[gripper] open -> %.2f %s", cfg.open_pos,
                     "ok" if ok else "FAILED")
+        return ok
 
     def gripper_close(self) -> None:
         if self._gripper_motor is None:
             logger.info("[gripper] no motor")
             return
+        self._gripper_hold_target = self._gripper_cfg.close_pos
         self._gripper_cmd(self._gripper_cfg.close_pos)
         logger.info("[gripper] close -> %.2f", self._gripper_cfg.close_pos)
 
-    def gripper_grip(self) -> None:
+    def gripper_grip(self) -> bool:
         if self._gripper_motor is None:
             logger.info("[gripper] no motor")
-            return
-        ok = self._gripper_cmd(self._gripper_cfg.grip_pos)
+            return False
+        cfg = self._gripper_cfg
+        ctrl = self._arm._ctrl_map.get("damiao")
+        target = cfg.grip_pos
+
+        self._gripper_hold_target = None
+        ok = self._gripper_cmd(target)
         if not ok:
-            logger.warning("[gripper] grip failed, trying gentle ramp")
-            half = self._gripper_cfg.grip_pos * 0.5
-            self._gripper_motor.send_mit(half, 0.0, self._gripper_cfg.mit_kp,
-                                        self._gripper_cfg.mit_kd, 0.0)
-            time.sleep(2.0)
-            ok = self._gripper_cmd(self._gripper_cfg.grip_pos)
-        logger.info("[gripper] grip -> %.2f %s", self._gripper_cfg.grip_pos,
-                    "ok" if ok else "FAILED")
+            logger.warning("[gripper] grip cmd failed")
+            self._gripper_hold_target = target
+            return False
+
+        self._gripper_hold_target = target
+        st = None
+        for _ in range(5):
+            self._gripper_motor.request_feedback()
+            time.sleep(0.02)
+            if ctrl:
+                ctrl.poll_feedback_once()
+            st = self._gripper_motor.get_state()
+            if st is not None:
+                break
+
+        if st is None:
+            return True
+
+        actual = st.pos
+        delta = abs(actual - target)
+
+        if delta > 0.5:
+            logger.info("[gripper] object at pos=%.3f (delta=%.3f) — gripped", actual, delta)
+            return True
+        else:
+            logger.info("[gripper] no object pos=%.3f (delta=%.3f) — missed", actual, delta)
+            return False
 
     def get_observation(self) -> ArmObservation:
         pos, vel, torq = self._arm.get_state()
@@ -275,11 +312,25 @@ class VectorBH6ArmDriver:
             alpha = i / n
             q = q_start + alpha * (target - q_start)
             self._arm.mit(pos=q, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
+            if self._gripper_hold_target is not None and self._gripper_motor is not None:
+                try:
+                    self._gripper_motor.send_mit(self._gripper_hold_target, 0.0,
+                                                  self._gripper_cfg.mit_kp,
+                                                  self._gripper_cfg.mit_kd, 0.0)
+                except Exception:
+                    pass
             time.sleep(dt)
             cv2.waitKey(1)
             if frame_cb:
                 frame_cb()
         self._arm.mit(pos=target, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
+        if self._gripper_hold_target is not None and self._gripper_motor is not None:
+            try:
+                self._gripper_motor.send_mit(self._gripper_hold_target, 0.0,
+                                              self._gripper_cfg.mit_kp,
+                                              self._gripper_cfg.mit_kd, 0.0)
+            except Exception:
+                pass
         cv2.waitKey(1)
         if frame_cb:
             frame_cb()
@@ -336,7 +387,17 @@ class VectorBH6ArmDriver:
         logger.info("[triage] grip object")
         if frame_cb:
             frame_cb()
-        self.gripper_grip()
+        if not self.gripper_grip():
+            logger.warning("[triage] first grip missed, re-approach with larger inset")
+            self.move_to_pose(x=px + inset, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
+                              duration=2.0, frame_cb=frame_cb)
+            self.gripper_open()
+            command.gripper_open_done = True
+            inset = min(inset + 0.01, 0.10)
+            self.move_to_pose(x=px + inset, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
+                              duration=2.0, frame_cb=frame_cb)
+            if not self.gripper_grip():
+                logger.warning("[triage] second grip also missed")
 
         logger.info("[triage] lift (z=%.3f)", pre_z)
         self.move_to_pose(x=px + inset, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
@@ -370,8 +431,11 @@ class VectorBH6ArmDriver:
         logger.info("[triage] returning home from joints %s", np.round(q, 3))
 
         self._arm.stop_control_loop()
-        mid = q * 0.4
-        self._slew_mit(mid, duration=3.0, frame_cb=frame_cb)
+        clearance = q.copy()
+        clearance[2] = max(q[2], 1.2)
+        if np.any(np.abs(clearance - q) > 0.01):
+            logger.info("[triage] raise to clearance joints %s", np.round(clearance, 3))
+            self._slew_mit(clearance, duration=3.0, frame_cb=frame_cb)
         self._slew_mit(np.zeros(6), duration=5.0, frame_cb=frame_cb)
         self._endpos._q_target[:] = np.zeros(6)
         self._arm.start_control_loop(self._endpos._loop_cb, rate=10)

@@ -1,7 +1,6 @@
 from __future__ import annotations
-import numpy as np
 from stratus.core.vision import CameraFrame
-from stratus.core.arm_driver import TriageCommand
+from stratus.core.arm_driver import TriageCommand, DetectedObject
 
 
 class DummyClassifier:
@@ -20,6 +19,12 @@ class DummyClassifier:
         grade = ["bin_a", "bin_b", "bin_c"][self._count % 3]
         self._count += 1
         bin_cfg = self._bins[grade]
+        cx, cy = 0.5, 0.5
+        obj = DetectedObject(
+            name="test", confidence=0.5,
+            left=cx - 0.05, top=cy - 0.05,
+            width=0.10, height=0.10,
+        )
         return TriageCommand(
             action="pick_and_place",
             target_bin=grade,
@@ -27,5 +32,5 @@ class DummyClassifier:
             drop_joints=bin_cfg["angles"],
             label=bin_cfg["label"],
             detected_labels=["test"],
-            detected_objects=[],
+            detected_objects=[obj],
         )

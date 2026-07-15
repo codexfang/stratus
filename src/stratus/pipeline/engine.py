@@ -230,64 +230,114 @@ class StratusPipeline:
 
 
     def _visual_servo(self, cmd: TriageCommand) -> bool:
-        """Move to pre-approach height. If workspace-camera position unreachable,
-        move to safe search position and let _micro_adjust visually servo."""
-        if not self._arm or not cmd.pickup_pose:
-            return True
-        pu = cmd.pickup_pose
-        pre_z = max(pu["z"] + 0.20, 0.30)
-        pitch = pu.get("pitch", 0)
-
-        # Try the workspace-camera position first
-        ok = self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=5.0,
-                                    frame_cb=self._update_preview)
-        if ok:
-            cmd.pickup_refined = True
-            return True
-
-        # Workspace position unreachable - move to safe search position above workspace center
-        logger.warning("[servo] pre_z IK failed (%.3f, %.3f) — moving to search position", pu["x"], pu["y"])
-        # Use a position within actual reachable workspace (X < 0.35)
-        search_x, search_y = 0.32, 0.0
-        ok = self._arm.move_to_pose(search_x, search_y, pre_z, pitch=0.0, duration=5.0,
+        """Move to a known safe search position, then visually servo to object using arm camera.
+        Returns False if arm can't reach search position."""
+        if not self._arm or not self._arm_camera or not self._arm_camera.is_connected:
+            logger.error("[servo] arm camera not available")
+            return False
+            
+        # Known safe search position (verified reachable)
+        search_x, search_y, search_z = 0.25, 0.0, 0.35
+        pitch = 0.0
+        
+        logger.info("[servo] moving to search position (%.3f, %.3f, %.3f)", search_x, search_y, search_z)
+        ok = self._arm.move_to_pose(search_x, search_y, search_z, pitch=0.0, duration=5.0,
                                     frame_cb=self._update_preview)
         if not ok:
-            logger.error("[servo] search position also unreachable")
+            logger.error("[servo] search position unreachable")
             return False
-        
-        # Mark as refined so _micro_adjust knows to use current position as base
+            
         cmd.pickup_refined = True
-        # Override pickup_pose with search position as starting point
-        cmd.pickup_pose["x"] = search_x
-        cmd.pickup_pose["y"] = search_y
+        # Start visual servo from search position
+        cmd.pickup_pose = {"x": search_x, "y": search_y, "z": 0.15, "roll": 0, "pitch": 0, "yaw": 0}
         return True
 
     def _micro_adjust(self, cmd: TriageCommand) -> None:
-        """Visual servoing using arm camera (eye-in-hand).
-        Move to approach height, detect object in arm camera, center it, then descend."""
-        if not self._arm or not cmd.pickup_pose:
-            return
-        if self._arm_camera is None or not self._arm_camera.is_connected:
+        """Pure visual servoing: start at search position, scan with arm camera,
+        find object, center it, then descend and pick."""
+        if not self._arm or not self._arm_camera or not self._arm_camera.is_connected:
             logger.warning("[micro] arm camera not available")
             return
+        
         pu = cmd.pickup_pose
         pitch = pu.get("pitch", 0)
         pz = pu.get("z", 0.15)
         approach_z = pz + 0.15
         target_name = cmd.detected_labels[0] if cmd.detected_labels else ""
-
+        
+        # Ensure gripper is open
         self._arm.gripper_open()
         cmd.gripper_open_done = True
         
-        # Move to approach height above pickup position
-        ok = self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch, duration=4.0,
+        # Start at known safe search position
+        search_x, search_y, search_z = 0.25, 0.0, 0.35
+        
+        # Move to search position (should already be there from _visual_servo)
+        ok = self._arm.move_to_pose(search_x, search_y, search_z, pitch=0.0, duration=3.0,
                                     frame_cb=self._update_preview)
         if not ok:
-            logger.warning("[micro] approach_z IK failed (%.3f, %.3f) — unreachable", pu["x"], pu["y"])
+            logger.error("[micro] cannot reach search position")
             return
-
-        # Visual servoing loop: center object in arm camera
-        max_iters = 5
+        
+        # Scan in a grid pattern at search height to find object
+        logger.info("[micro] starting visual search for '%s'", target_name)
+        found = False
+        
+        # Search grid: 3x3 grid around search position
+        grid_offsets = [
+            (0.0, 0.0),      # center
+            (0.05, 0.0),     # right
+            (-0.05, 0.0),    # left
+            (0.0, 0.05),     # forward
+            (0.0, -0.05),    # back
+            (0.04, 0.04),    # diagonals
+            (-0.04, 0.04),
+            (-0.04, -0.04),
+            (0.04, -0.04),
+        ]
+        
+        best = None
+        found_at = None
+        
+        for dx, dy in grid_offsets:
+            gx = 0.25 + dx
+            gy = 0.0 + dy
+            
+            # Skip if out of reachable bounds
+            if gx < 0.20 or gx > 0.35 or abs(gy) > 0.15:
+                continue
+                
+            ok = self._arm.move_to_pose(gx, gy, 0.35, pitch=0.0, duration=2.0,
+                                        frame_cb=self._update_preview)
+            if not ok:
+                continue
+                
+            frame = self._arm_camera.read()
+            if frame is None:
+                continue
+                
+            result = self._classifier.classify(frame)
+            self._update_preview()
+            
+            # Check for target
+            for obj in result.detected_objects:
+                if obj.name == target_name:
+                    logger.info("[micro] found '%s' at (%.3f, %.3f) in arm cam", target_name, 0.25 + dx, 0.0 + dy)
+                    best = obj
+                    found = True
+                    break
+            
+            if best is not None:
+                break
+        
+        if best is None:
+            logger.error("[micro] target '%s' not found in search grid", target_name)
+            return
+        
+        # Now visually servo to center the object
+        logger.info("[micro] starting visual servo to center object")
+        max_iters = 8
+        
         for i in range(max_iters):
             frame = self._arm_camera.read()
             if frame is None:
@@ -297,46 +347,19 @@ class StratusPipeline:
             result = self._classifier.classify(frame)
             self._update_preview()
             
-            # Find target object in arm camera
+            # Find target object
             best = None
             for obj in result.detected_objects:
                 if obj.name == target_name:
                     best = obj
                     break
             if best is None and result.detected_objects:
-                # Fallback: closest to center
                 best = min(result.detected_objects,
                            key=lambda o: abs(o.left + o.width/2 - 0.5) + abs(o.top + o.height/2 - 0.5))
             
             if best is None:
-                logger.warning("[micro] target '%s' not found in arm cam — searching", target_name)
-                # Small search spiral
-                search_offsets = [(0.02, 0), (0, 0.02), (-0.02, 0), (0, -0.02),
-                                 (0.03, 0.03), (-0.03, 0.03), (-0.03, -0.03), (0.03, -0.03)]
-                found = False
-                for sx, sy in search_offsets:
-                    search_x = pu["x"] + sx
-                    search_y = pu["y"] + sy
-                    ok = self._arm.move_to_pose(search_x, search_y, approach_z, pitch=pitch, duration=1.5,
-                                                frame_cb=self._update_preview)
-                    if not ok:
-                        continue
-                    frame = self._arm_camera.read()
-                    if frame is None:
-                        continue
-                    result = self._classifier.classify(frame)
-                    self._update_preview()
-                    for obj in result.detected_objects:
-                        if obj.name == target_name:
-                            best = obj
-                            found = True
-                            logger.info("[micro] found target at search offset (%.2f, %.2f)", sx, sy)
-                            break
-                    if found:
-                        break
-                if not found:
-                    logger.error("[micro] target not found in search pattern")
-                    break
+                logger.warning("[micro] target lost during servo")
+                break
             
             # Compute offset from image center
             cx = best.left + best.width / 2
@@ -345,17 +368,15 @@ class StratusPipeline:
             dy_px = (cy - 0.5)
             
             # If well centered, break
-            if abs(dx_px) < 0.02 and abs(dy_px) < 0.02:
+            if abs(dx_px) < 0.015 and abs(dy_px) < 0.015:
                 logger.info("[micro] centered in arm cam (dx=%.3f, dy=%.3f)", dx_px, dy_px)
                 break
             
-            # Convert pixel offset to world offset at current height
-            # Arm camera is at approach_z, object at pz
-            cam_height = approach_z - pz
+            # Convert pixel offset to world offset
+            cam_height = 0.35 - 0.15  # search_z - pz = 0.20
             if cam_height < 0.02:
-                cam_height = 0.15
+                cam_height = 0.20
             
-            # Estimate FOV (arm camera 60 deg horizontal)
             hfov = np.deg2rad(60.0)
             fh, fw = frame.image.shape[:2]
             vfov = hfov * fh / fw
@@ -365,22 +386,40 @@ class StratusPipeline:
             dx = dx_px * scale_x
             dy = dy_px * scale_y
             
-            # Apply correction in camera frame (approximate)
-            # Camera X = arm -X, Camera Y = arm -Y (approximate)
+            # Apply correction (camera coords to arm coords)
             pu["x"] -= dy
             pu["y"] -= dx
             
-            logger.info("[micro] iter %d: pixel_offset=(%.3f,%.3f) world_corr=(%.3f,%.3f) new_pos=(%.3f,%.3f)",
+            # Clamp to reachable bounds
+            pu["x"] = max(0.20, min(0.35, pu["x"]))
+            pu["y"] = max(-0.15, min(0.15, pu["y"]))
+            
+            logger.info("[servo] iter %d: pixel_offset=(%.3f,%.3f) world_corr=(%.3f,%.3f) pos=(%.3f,%.3f)",
                         i, dx_px, dy_px, -dy, -dx, pu["x"], pu["y"])
             
             # Move to corrected position
-            ok = self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch, duration=2.0,
+            ok = self._arm.move_to_pose(pu["x"], pu["y"], 0.35, pitch=0.0, duration=1.5,
                                         frame_cb=self._update_preview)
             if not ok:
-                logger.warning("[micro] correction IK failed")
+                logger.warning("[servo] correction IK failed")
                 break
         
-        logger.info("[micro] visual servoing complete at (%.3f, %.3f)", pu["x"], pu["y"])
+        # Now centered - descend to pickup height
+        logger.info("[micro] descending to pickup height at (%.3f, %.3f)", pu["x"], pu["y"])
+        ok = self._arm.move_to_pose(pu["x"], pu["y"], pz, pitch=0.0, duration=3.0,
+                                    frame_cb=self._update_preview)
+        if not ok:
+            logger.warning("[micro] descent IK failed")
+            return
+        
+        # Small forward move for grip
+        ok = self._arm.move_to_pose(pu["x"] + 0.02, pu["y"], pz, pitch=0.0, duration=2.0,
+                                    frame_cb=self._update_preview)
+        if not ok:
+            logger.warning("[micro] final approach failed")
+            return
+            
+        logger.info("[micro] visual servo complete at (%.3f, %.3f, %.3f)", pu["x"], pu["y"], pz)
     
     def _exec_and_telemetry(self, cmd: TriageCommand) -> None:
         if self._arm:

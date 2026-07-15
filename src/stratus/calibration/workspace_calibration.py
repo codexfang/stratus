@@ -74,6 +74,18 @@ class WorkspaceCalibration:
             return False
         with open(p) as f:
             data = json.load(f)
+        
+        # Handle old format with 'matrix'/'type' fields
+        if 'matrix' in data and 'homography' not in data:
+            data['homography'] = data.pop('matrix')
+        if 'type' in data:
+            data['type'] = data.get('type', 'homography')
+        if 'camera_matrix' not in data and 'homography' in data:
+            # If no camera_matrix but have homography, use identity
+            data['camera_matrix'] = np.eye(3).tolist()
+        if 'dist_coeffs' not in data:
+            data['dist_coeffs'] = np.zeros(5).tolist()
+        
         self.calib_data = WorkspaceCalibrationData(**data)
         self._build_undistort_maps()
         logger.info("Loaded calibration from %s (v%d, %d pts)", path,

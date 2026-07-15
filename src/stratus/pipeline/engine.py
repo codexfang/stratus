@@ -48,6 +48,7 @@ class StratusPipeline:
         self._last_arm_frame = None
         self._arm_frame_counter = 0
         self._update_preview_counter = 0
+        self._display_scale = 1.0  # Track display scaling for click coords
         cv2.namedWindow("Stratus")
         cv2.setMouseCallback("Stratus", self._on_mouse)
 
@@ -72,9 +73,12 @@ class StratusPipeline:
         h, w = self._last_h, self._last_w
         if h == 0 or w == 0:
             return
+        # Convert click from displayed window coords to original image coords
+        x_img = int(x / self._display_scale)
+        y_img = int(y / self._display_scale)
         # Check if click is in workspace portion (left side of combined window)
         # Combined window has workspace (width w) + arm_cam (width h) = total width w + h
-        if x >= w:  # Click in arm camera portion
+        if x_img >= w:  # Click in arm camera portion
             return
         self._selected_idx = -1
         for i, obj in enumerate(self._current_objects):
@@ -82,7 +86,7 @@ class StratusPipeline:
             y1 = int(obj.top * h)
             x2 = int((obj.left + obj.width) * w)
             y2 = int((obj.top + obj.height) * h)
-            if x1 <= x <= x2 and y1 <= y <= y2:
+            if x1 <= x_img <= x2 and y1 <= y_img <= y2:
                 self._selected_idx = i
                 logger.info("Selected object %d: %s", i, obj.name)
                 break
@@ -176,6 +180,9 @@ class StratusPipeline:
             new_w = int(combined.shape[1] * scale)
             new_h = int(combined.shape[0] * scale)
             combined = cv2.resize(combined, (new_w, new_h))
+            self._display_scale = scale
+        else:
+            self._display_scale = 1.0
         cv2.imshow("Stratus", combined)
 
     def _classify(self, frame) -> TriageCommand | None:

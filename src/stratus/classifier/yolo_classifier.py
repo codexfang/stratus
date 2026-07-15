@@ -30,7 +30,7 @@ CALIBRATION_PATH = Path.home() / "stratus/calibration/workspace_cal.json"
 
 class YOLOClassifier:
     def __init__(self, model_path: str = "models/yolov8s-world.pt",
-                 conf_threshold: float = 0.05,
+                 conf_threshold: float = 0.30,
                  map_offset_x: float = 0.15, map_scale_x: float = 0.50,
                  map_offset_y: float = -0.20, map_scale_y: float = 0.40,
                  pickup_z: float = 0.15, pitch: float = 0.2):
@@ -63,7 +63,8 @@ class YOLOClassifier:
             import json
             with open(CALIBRATION_PATH) as f:
                 cal = json.load(f)
-            H = np.array(cal.get("matrix", []), dtype=np.float32)
+            # Support both "matrix" and "homography" keys for backward compat
+            H = np.array(cal.get("matrix") or cal.get("homography", []), dtype=np.float32)
             if H.shape == (3, 3):
                 self._homography = H
                 self._use_calibration = True
@@ -115,19 +116,25 @@ class YOLOClassifier:
                 pickup_pose=None, drop_joints=None,
             )
 
-        grade = "A"
-        target = "A"
-        top = unique[:5]
-
-        obj = objects[0]
+        # Select highest confidence object
+        obj = max(objects, key=lambda o: o.confidence)
         cx = (obj.left + obj.width / 2)
         cy = (obj.top + obj.height / 2)
 
+        # Determine target bin based on object class
+        bin_map = {
+            "cup, coffee cup, mug, glass": "A",
+            "bottle, water bottle": "B",
+            "book": "C",
+        }
+        target = bin_map.get(obj.name, "A")
+        grade = "A"
+
         # Use calibration homography if available, else linear map
         if self._use_calibration and self._homography is not None:
-            H_inv = np.linalg.inv(self._homography)
+            # H maps pixel (x,y,1) -> world (x,y,w); use H directly
             pt = np.array([cx * w, cy * h, 1.0], dtype=np.float32)
-            proj = H_inv @ pt
+            proj = self._homography @ pt
             map_x, map_y = proj[0] / proj[2], proj[1] / proj[2]
             logger.info(f"Calibrated pick: ({map_x:.3f}, {map_y:.3f}) from pixel ({cx*w:.1f},{cy*h:.1f})")
         else:
@@ -135,12 +142,12 @@ class YOLOClassifier:
             map_y = self._map_offset_y + cy * self._map_scale_y
             logger.info(f"Linear map pick: ({map_x:.3f}, {map_y:.3f}) from pixel ({cx*w:.1f},{cy*h:.1f})")
 
-        logger.info(f"Pick {top[0]} at ({map_x:.3f}, {map_y:.3f}) -> bin_{target.lower()}")
+        logger.info(f"Pick {obj.name} at ({map_x:.3f}, {map_y:.3f}) -> bin_{target.lower()}")
 
         return TriageCommand(
             action="pick_and_place", target_bin=f"bin_{target.lower()}",
             label=f"Grade {grade} - Refurbishable",
-            detected_labels=top,
+            detected_labels=unique[:5],
             detected_objects=objects,
             pickup_pose={"x": map_x, "y": map_y, "z": self._pickup_z,
                          "roll": 0, "pitch": self._pitch, "yaw": 0},

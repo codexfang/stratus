@@ -29,9 +29,9 @@ class PhoneCamera:
         except Exception:
             pass
 
-    def read(self, use_flash: bool = False) -> CameraFrame:
+    def read(self, use_flash: bool = False) -> CameraFrame | None:
         if self._cap is None:
-            raise RuntimeError("Camera not connected")
+            return None
         if use_flash:
             self.flash_on()
             time.sleep(0.3)
@@ -39,7 +39,7 @@ class PhoneCamera:
         if use_flash:
             self.flash_off()
         if not ret:
-            raise RuntimeError("Failed to read frame")
+            return None
         return CameraFrame(
             image=frame, timestamp=time.time(),
             width=frame.shape[1], height=frame.shape[0],

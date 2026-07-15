@@ -268,8 +268,7 @@ class StratusPipeline:
             self._draw_boxes(display, cmd.detected_objects, highlight=idx)
             bin_name = BIN_NAMES.get(cmd.target_bin, cmd.target_bin)
             self._bottom_bar(display, f"[{idx}] {name}  ->  {bin_name}", GREEN)
-            ac = self._arm_camera.read() if self._arm_camera is not None else None
-            self._show_both(display, ac)
+            self._show_both(display)
             key = cv2.waitKey(50) & 0xFF
             if key == ord('y'):
                 cx = (obj.left + obj.width / 2)
@@ -311,8 +310,7 @@ class StratusPipeline:
                 display = frame.image.copy()
                 self._draw_workspace(display)
                 self._bottom_bar(display, f"Clear workspace... {i}", (0, 255, 255))
-                ac = self._arm_camera.read() if self._arm_camera is not None else None
-                self._show_both(display, ac)
+                self._show_both(display)
                 cv2.waitKey(1)
                 time.sleep(0.05)
             cv2.waitKey(500)
@@ -346,8 +344,7 @@ class StratusPipeline:
                         self._bottom_bar(display, "scanning...", GRAY)
                 else:
                     self._bottom_bar(display, "scanning...", GRAY)
-                ac = self._arm_camera.read() if self._arm_camera is not None else None
-                self._show_both(display, ac)
+                self._show_both(display)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     raise KeyboardInterrupt()
 

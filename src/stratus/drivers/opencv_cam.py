@@ -16,6 +16,7 @@ class USBCamera:
         self._cap = cv2.VideoCapture(self._index)
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if not self._cap.isOpened():
             raise RuntimeError(f"Cannot open camera {self._index}")
         actual_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -23,12 +24,12 @@ class USBCamera:
         logger = __import__('logging').getLogger(__name__)
         logger.info("Camera %s: %dx%d", self._index, actual_w, actual_h)
 
-    def read(self, use_flash: bool = False) -> CameraFrame:
+    def read(self, use_flash: bool = False) -> CameraFrame | None:
         if self._cap is None:
-            raise RuntimeError("Camera not connected")
+            return None
         ret, frame = self._cap.read()
         if not ret:
-            raise RuntimeError("Failed to read frame")
+            return None
         return CameraFrame(image=frame, timestamp=time.time(), width=frame.shape[1], height=frame.shape[0])
 
     def disconnect(self) -> None:

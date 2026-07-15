@@ -230,26 +230,21 @@ class StratusPipeline:
 
 
     def _visual_servo(self, cmd: TriageCommand) -> bool:
-        """Move to a known safe search position, then visually servo to object using arm camera.
-        Returns False if arm can't reach search position."""
+        """Move to home joint position (known safe), then let _micro_adjust do joint-space visual servoing."""
         if not self._arm or not self._arm_camera or not self._arm_camera.is_connected:
             logger.error("[servo] arm camera not available")
             return False
             
-        # Known safe search position (verified reachable)
-        search_x, search_y, search_z = 0.25, 0.0, 0.35
-        pitch = 0.0
+        # Move to home/zero joint position (known safe - all joints at 0)
+        logger.info("[servo] moving to home joint position")
+        home_joints = np.zeros(6, dtype=np.float64)
+        self._arm.stop_control_loop()
+        self._slew_mit(home_joints, duration=5.0, frame_cb=self._update_preview)
+        self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
         
-        logger.info("[servo] moving to search position (%.3f, %.3f, %.3f)", search_x, search_y, search_z)
-        ok = self._arm.move_to_pose(search_x, search_y, search_z, pitch=0.0, duration=5.0,
-                                    frame_cb=self._update_preview)
-        if not ok:
-            logger.error("[servo] search position unreachable")
-            return False
-            
         cmd.pickup_refined = True
-        # Start visual servo from search position
-        cmd.pickup_pose = {"x": search_x, "y": search_y, "z": 0.15, "roll": 0, "pitch": 0, "yaw": 0}
+        # Start from home joint position
+        cmd.pickup_pose = {"x": 0.25, "y": 0.0, "z": 0.15, "roll": 0, "pitch": 0, "yaw": 0}
         return True
 
     def _micro_adjust(self, cmd: TriageCommand) -> None:
@@ -438,8 +433,40 @@ class StratusPipeline:
             }))
 
     def _try_pickup_pose(self, x: float, y: float, z: float, pitch: float) -> bool:
-        """Try to move to a pickup pose, return True if IK succeeds."""
-        return self._arm.move_to_pose(x, y, z, pitch=pitch, duration=0.5) is not False
+        """Try to move to a pickup pose using joint-space movement, return True if succeeds."""
+        # Use joint-space movement from home position
+        # This bypasses Cartesian IK entirely
+        try:
+            # Go to home first
+            home_joints = np.zeros(6)
+            self._arm.stop_control_loop()
+            self._slew_mit(np.zeros(6), duration=2.0, frame_cb=self._update_preview)
+            
+            # Simple approach: move to pickup area using joint space
+            # Joint 1: base rotation (x position)
+            # Joint 2: shoulder (y position / height)
+            # Joint 3: elbow (reach)
+            # Joint 4: wrist roll
+            # Joint 5: wrist pitch
+            # Joint 6: wrist yaw
+            
+            # Map x to joint 1 (base rotation): x=0.25 -> joint 0, x=0.35 -> joint 1.0
+            j1 = np.clip((x - 0.25) / 0.1, -0.5, 0.5)
+            # Joint 2: shoulder - higher z = more negative (up), lower z = more positive (down)
+            j2 = np.clip((0.3 - z) * 2.0, -0.5, 1.0)
+            # Joint 3: elbow - compensates shoulder
+            j3 = np.clip(-j2 * 0.8, -1.0, 0.5)
+            
+            q_target = np.array([j1, 0.5, -0.3, 0.0, 0.0, 0.0])
+            self._arm.stop_control_loop()
+            self._slew_mit(q_target, duration=3.0, frame_cb=self._update_preview)
+            self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
+            
+            # Check if we reached close to target
+            q_actual, _, _ = self._arm.get_state()
+            return np.linalg.norm(q_actual[:3] - q_target[:3]) < 0.5
+        except Exception:
+            return False
 
     def _confirm(self, cmd: TriageCommand) -> bool:
         if not cmd.detected_objects:
@@ -466,66 +493,13 @@ class StratusPipeline:
             if key == ord('y'):
                 cx = (obj.left + obj.width / 2)
                 cy = (obj.top + obj.height / 2)
-                # Use calibration homography if available, else linear map
-                if hasattr(self._classifier, '_use_calibration') and self._classifier._use_calibration and self._classifier._homography is not None:
-                    H = self._classifier._homography
-                    h, w = frame.image.shape[:2]
-                    pt = np.array([cx * w, cy * h, 1.0], dtype=np.float32)
-                    proj = H @ pt
-                    map_x, map_y = proj[0] / proj[2], proj[1] / proj[2]
-                    logger.info("[confirm] calibrated pick: (%.3f, %.3f) from pixel (%.1f, %.1f)",
-                                map_x, map_y, cx * w, cy * h)
-                else:
-                    mo = self._classifier._map_offset_x if hasattr(self._classifier, '_map_offset_x') else 0.15
-                    ms = self._classifier._map_scale_x if hasattr(self._classifier, '_map_scale_x') else 0.50
-                    mox = self._classifier._map_offset_y if hasattr(self._classifier, '_map_offset_y') else -0.20
-                    msy = self._classifier._map_scale_y if hasattr(self._classifier, '_map_scale_y') else 0.40
-                    map_x = mo + cx * ms
-                    map_y = mox + cy * msy
-                    logger.info("[confirm] linear map pick: (%.3f, %.3f)", map_x, map_y)
-                pz = self._classifier._pickup_z if hasattr(self._classifier, '_pickup_z') else 0.15
-                pt = self._classifier._pitch if hasattr(self._classifier, '_pitch') else 0.0
-
-                # Try homography position with multiple pitch angles
-                cmd.pickup_pose = {"x": map_x, "y": map_y, "z": pz, "roll": 0, "pitch": pt, "yaw": 0}
-                cmd.pickup_pose["x"] = max(0.25, min(0.50, cmd.pickup_pose["x"]))
-                cmd.pickup_pose["y"] = max(-0.20, min(0.20, cmd.pickup_pose["y"]))
                 
-                success = False
-                for pitch_try in [0.0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3]:
-                    cmd.pickup_pose["pitch"] = pitch_try
-                    if self._try_pickup_pose(map_x, map_y, pz, pitch_try):
-                        logger.info("[confirm] reachable at pitch=%.2f", pitch_try)
-                        success = True
-                        break
+                # Don't use coordinate mapping - just use visual servoing from home
+                logger.info("[confirm] pick %s at pixel (%.1f, %.1f) - using visual servoing", 
+                            obj.name, cx * w, cy * h)
                 
-                # If homography position unreachable, try linear map position
-                if not success:
-                    logger.warning("[confirm] homography position unreachable, trying linear map")
-                    mo = self._classifier._map_offset_x if hasattr(self._classifier, '_map_offset_x') else 0.15
-                    ms = self._classifier._map_scale_x if hasattr(self._classifier, '_map_scale_x') else 0.50
-                    mox = self._classifier._map_offset_y if hasattr(self._classifier, '_map_offset_y') else -0.20
-                    msy = self._classifier._map_scale_y if hasattr(self._classifier, '_map_scale_y') else 0.40
-                    lin_x = mo + cx * ms
-                    lin_y = mox + cy * msy
-                    lin_x = max(0.25, min(0.50, lin_x))
-                    lin_y = max(-0.20, min(0.20, lin_y))
-                    for pitch_try in [0.0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3]:
-                        if self._try_pickup_pose(lin_x, lin_y, pz, pitch_try):
-                            cmd.pickup_pose = {"x": lin_x, "y": lin_y, "z": pz, "roll": 0, "pitch": pitch_try, "yaw": 0}
-                            logger.info("[confirm] linear map reachable at pitch=%.2f", pitch_try)
-                            success = True
-                            break
-                
-                if not success:
-                    logger.warning("[confirm] all static poses unreachable — visual servoing will find reachable pose")
-                    # Don't fail - visual servoing will find reachable pose
-                    # Use the linear map position as starting point
-                    cmd.pickup_pose = {"x": lin_x, "y": lin_y, "z": pz, "roll": 0, "pitch": pt, "yaw": 0}
-                    success = True
-
-                logger.info("[confirm] pick %s at (%.3f, %.3f, %.3f)",
-                            obj.name, cmd.pickup_pose["x"], cmd.pickup_pose["y"], pz)
+                # Start from home position, visual servo will find and center object
+                cmd.pickup_pose = {"x": 0.25, "y": 0.0, "z": 0.15, "roll": 0, "pitch": 0, "yaw": 0}
                 cmd.detected_labels = [obj.name]
                 cmd.detected_objects = [obj]
                 return True

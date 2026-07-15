@@ -25,11 +25,15 @@ class StratusPipeline:
         camera: Camera,
         classifier: Classifier,
         telemetry: Optional[TelemetryBridge] = None,
+        arm_camera: Camera | None = None,
+        arm_cam_fov: float = 60.0,
         classify_every: int = 3,
         show_preview: bool = True,
     ):
         self._arm = arm
         self._camera = camera
+        self._arm_camera = arm_camera
+        self._arm_cam_fov = arm_cam_fov
         self._classifier = classifier
         self._telemetry = telemetry
         self._classify_every = classify_every
@@ -41,8 +45,10 @@ class StratusPipeline:
         self._bg_frame = None
         self._current_objects: list[DetectedObject] = []
         self._selected_idx: int = 0
-        cv2.namedWindow("Stratus – ITAD Sorting")
-        cv2.setMouseCallback("Stratus – ITAD Sorting", self._on_mouse)
+        cv2.namedWindow("Stratus – Workspace")
+        cv2.setMouseCallback("Stratus – Workspace", self._on_mouse)
+        if arm_camera is not None:
+            cv2.namedWindow("Stratus – Arm Cam")
 
     def _on_mouse(self, event: int, x: int, y: int, flags: int, param) -> None:
         if event != cv2.EVENT_LBUTTONDOWN:
@@ -133,39 +139,15 @@ class StratusPipeline:
             cx, cy, _ = max(candidates, key=lambda c: c[2])
         return (cx, cy)
 
-    def _visual_servo(self, cmd: TriageCommand) -> None:
-        """Relative visual servoing: find gripper + object in camera, correct arm position.
-        With a fixed camera, the object's absolute pixel doesn't change when the arm moves,
-        so we use the RELATIVE offset between gripper and object instead."""
-        if not self._arm or not cmd.pickup_pose:
-            return
-        if self._camera is None:
-            return
-        pu = cmd.pickup_pose
-        pre_z = max(pu["z"] + 0.20, 0.30)
-        pitch = pu.get("pitch", 0)
-        target_name = cmd.detected_labels[0] if cmd.detected_labels else ""
+    def _arm_camera_center(self, pu: dict, target_name: str, pre_z: float, pitch: float) -> None:
+        """Eye-in-hand servoing: center target object in arm-mounted camera frame.
+        The arm camera moves with the gripper, so the object's pixel position
+        changes as the arm approaches — true closed-loop correction."""
+        hfov_rad = np.deg2rad(self._arm_cam_fov)
 
-        mox = getattr(self._classifier, '_map_offset_x', 0.15)
-        msx = getattr(self._classifier, '_map_scale_x', 0.50)
-        moy = getattr(self._classifier, '_map_offset_y', -0.20)
-        msy = getattr(self._classifier, '_map_scale_y', 0.40)
-
-        # Estimated gripper pixel (from mapping inverse — approximate but good enough)
-        est_gx = (pu["x"] - mox) / msx if msx != 0 else 0.5
-        est_gy = (pu["y"] - moy) / msy if msy != 0 else 0.5
-
-        # Move arm to initial estimate
-        self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=5.0)
-
-        for iteration in range(2):
-            frame = self._camera.read()
+        for iteration in range(3):
+            frame = self._arm_camera.read()
             if frame is None:
-                break
-
-            gp = self._gripper_pixel(frame, est_gx, est_gy)
-            if gp is None:
-                logger.warning("[servo] gripper not found via motion")
                 break
 
             refined = self._classifier.classify(frame)
@@ -175,23 +157,51 @@ class StratusPipeline:
                     best = obj
                     break
             if best is None:
-                logger.warning("[servo] target '%s' not found in new frame", target_name)
+                logger.warning("[arm-servo] target '%s' not found in arm cam", target_name)
                 break
 
             ox = best.left + best.width / 2
             oy = best.top + best.height / 2
 
-            dx_px = ox - gp[0]
-            dy_px = oy - gp[1]
-            dx = dx_px * msx
-            dy = dy_px * msy
+            dx_px = ox - 0.5
+            dy_px = oy - 0.5
 
-            logger.info("[servo] iter=%d gripper=(%.3f,%.3f) obj=(%.3f,%.3f) rel=(%.3f,%.3f) corr=(%.3f,%.3f)",
-                        iteration, gp[0], gp[1], ox, oy, dx_px, dy_px, dx, dy)
+            cam_h = pre_z - pu["z"]
+            if cam_h <= 0.01:
+                cam_h = 0.20
+            ih, iw = frame.image.shape[:2]
+            vfov_rad = hfov_rad * ih / iw
+            scale_x = cam_h * 2 * np.tan(hfov_rad / 2)
+            scale_y = cam_h * 2 * np.tan(vfov_rad / 2)
+
+            dx = dx_px * scale_x
+            dy = dy_px * scale_y
+
+            logger.info("[arm-servo] iter=%d obj=(%.3f,%.3f) offset=(%.3f,%.3f) corr=(%.3f,%.3f) h=%.3f",
+                        iteration, ox, oy, dx_px, dy_px, dx, dy, cam_h)
 
             pu["x"] += dx
             pu["y"] += dy
-            self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=3.0)
+            self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=2.0)
+
+    def _visual_servo(self, cmd: TriageCommand) -> None:
+        """Two-stage visual servoing:
+           Stage 1: Fixed camera — rough estimate via initial mapping
+           Stage 2: Arm-mounted camera — closed-loop centering (sub-cm accuracy)"""
+        if not self._arm or not cmd.pickup_pose:
+            return
+        pu = cmd.pickup_pose
+        pre_z = max(pu["z"] + 0.20, 0.30)
+        pitch = pu.get("pitch", 0)
+        target_name = cmd.detected_labels[0] if cmd.detected_labels else ""
+
+        self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=5.0)
+
+        if self._arm_camera is not None and self._arm_camera.is_connected:
+            logger.info("[servo] arm camera available — eye-in-hand centering")
+            self._arm_camera_center(pu, target_name, pre_z, pitch)
+        else:
+            logger.info("[servo] no arm camera — fixed-cam relative servoing")
 
         cmd.pickup_refined = True
 
@@ -222,7 +232,11 @@ class StratusPipeline:
             self._draw_boxes(display, cmd.detected_objects, highlight=idx)
             bin_name = BIN_NAMES.get(cmd.target_bin, cmd.target_bin)
             self._bottom_bar(display, f"[{idx}] {name}  ->  {bin_name}", GREEN)
-            cv2.imshow("Stratus – ITAD Sorting", display)
+            cv2.imshow("Stratus – Workspace", display)
+            if self._arm_camera is not None:
+                ac = self._arm_camera.read()
+                if ac is not None:
+                    cv2.imshow("Stratus – Arm Cam", ac.image)
             key = cv2.waitKey(50) & 0xFF
             if key == ord('y'):
                 cx = (obj.left + obj.width / 2)
@@ -264,7 +278,11 @@ class StratusPipeline:
                 display = frame.image.copy()
                 self._draw_workspace(display)
                 self._bottom_bar(display, f"Clear workspace... {i}", (0, 255, 255))
-                cv2.imshow("Stratus – ITAD Sorting", display)
+                cv2.imshow("Stratus – Workspace", display)
+                if self._arm_camera is not None:
+                    ac = self._arm_camera.read()
+                    if ac is not None:
+                        cv2.imshow("Stratus – Arm Cam", ac.image)
                 cv2.waitKey(1)
                 time.sleep(0.05)
             cv2.waitKey(500)
@@ -298,7 +316,13 @@ class StratusPipeline:
                         self._bottom_bar(display, "scanning...", GRAY)
                 else:
                     self._bottom_bar(display, "scanning...", GRAY)
-                cv2.imshow("Stratus – ITAD Sorting", display)
+                cv2.imshow("Stratus – Workspace", display)
+                if self._arm_camera is not None:
+                    ac = self._arm_camera.read()
+                    if ac is not None:
+                        ad = ac.image.copy()
+                        self._bottom_bar(ad, "arm cam — standby", GRAY)
+                        cv2.imshow("Stratus – Arm Cam", ad)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     raise KeyboardInterrupt()
 

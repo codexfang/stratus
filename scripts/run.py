@@ -41,6 +41,9 @@ def main():
     parser.add_argument("--pickup-z", type=float, default=0.15)
     parser.add_argument("--pitch", type=float, default=0.2)
     parser.add_argument("--approach-inset", type=float, default=0.03)
+    parser.add_argument("--arm-cam-url", default="")
+    parser.add_argument("--arm-cam-index", type=int, default=-1)
+    parser.add_argument("--arm-cam-fov", type=float, default=60.0)
     args = parser.parse_args()
 
     print("=== Stratus Pipeline ===")
@@ -65,6 +68,14 @@ def main():
         camera = PhoneCamera(stream_url=args.phone_url)
     else:
         camera = USBCamera(index=args.camera)
+
+    arm_camera = None
+    if args.arm_cam_url:
+        arm_camera = PhoneCamera(stream_url=args.arm_cam_url)
+        print(f"Arm camera: WiFi stream {args.arm_cam_url}")
+    elif args.arm_cam_index >= 0:
+        arm_camera = USBCamera(index=args.arm_cam_index)
+        print(f"Arm camera: USB index {args.arm_cam_index}")
 
     classifier = DummyClassifier()
     telemetry = LocalTelemetry(log_path=Path.home() / "stratus/data/logs/telemetry.jsonl")
@@ -97,11 +108,14 @@ def main():
 
     print("Connecting camera...")
     camera.connect()
+    if arm_camera:
+        arm_camera.connect()
 
     print("Connecting telemetry...")
     telemetry.connect()
 
     pipeline = StratusPipeline(arm=arm, camera=camera, classifier=classifier, telemetry=telemetry,
+                                arm_camera=arm_camera, arm_cam_fov=args.arm_cam_fov,
                                 classify_every=1)
 
     print("Pipeline running. Y=pick N=skip Q=quit.\n")
@@ -113,6 +127,8 @@ def main():
         if arm:
             arm.disconnect()
         camera.disconnect()
+        if arm_camera:
+            arm_camera.disconnect()
         telemetry.disconnect()
         print("Done.")
 

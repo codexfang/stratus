@@ -181,18 +181,22 @@ class StratusPipeline:
 
 
 
-    def _visual_servo(self, cmd: TriageCommand) -> None:
+    def _visual_servo(self, cmd: TriageCommand) -> bool:
         """Move to pre-approach height at the stationary-camera estimated position.
-        No centering loop — that happens later at close range."""
+        Returns False if unreachable."""
         if not self._arm or not cmd.pickup_pose:
-            return
+            return True
         pu = cmd.pickup_pose
         pre_z = max(pu["z"] + 0.20, 0.30)
         pitch = pu.get("pitch", 0)
 
-        self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=5.0,
-                               frame_cb=self._update_preview)
+        ok = self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=5.0,
+                                    frame_cb=self._update_preview)
+        if not ok:
+            logger.warning("[servo] pre_z IK failed (%.3f, %.3f) — unreachable", pu["x"], pu["y"])
+            return False
         cmd.pickup_refined = True
+        return True
 
     def _micro_adjust(self, cmd: TriageCommand) -> None:
         """Open gripper, descend to 10 cm above object, read arm camera ONCE,
@@ -210,8 +214,11 @@ class StratusPipeline:
 
         self._arm.gripper_open()
         cmd.gripper_open_done = True
-        self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch, duration=3.0,
-                               frame_cb=self._update_preview)
+        ok = self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch, duration=3.0,
+                                    frame_cb=self._update_preview)
+        if not ok:
+            logger.warning("[micro] approach_z IK failed (%.3f, %.3f) — unreachable", pu["x"], pu["y"])
+            return
 
         frame = self._arm_camera.read()
         if frame is None:
@@ -261,14 +268,19 @@ class StratusPipeline:
         if abs(dx) > 0.002 or abs(dy) > 0.002:
             pu["x"] += dx
             pu["y"] += dy
+            pu["x"] = max(0.18, min(0.60, pu["x"]))
+            pu["y"] = max(-0.28, min(0.28, pu["y"]))
             self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch,
                                    duration=1.5, frame_cb=self._update_preview)
 
     def _exec_and_telemetry(self, cmd: TriageCommand) -> None:
         if self._arm:
-            self._visual_servo(cmd)
+            if not self._visual_servo(cmd):
+                logger.warning("[exec] abort — unreachable position")
+                return
             self._micro_adjust(cmd)
-            self._arm.execute_triage(cmd, frame_cb=self._update_preview)
+            if not self._arm.execute_triage(cmd, frame_cb=self._update_preview):
+                logger.warning("[exec] triage failed")
         if self._telemetry:
             drop = cmd.drop_joints or cmd.drop_pose
             self._telemetry.publish(TelemetryEvent(event_type="classification", payload={
@@ -310,6 +322,10 @@ class StratusPipeline:
                 pt = self._classifier._pitch if hasattr(self._classifier, '_pitch') else 0.2
                 cmd.pickup_pose = {"x": mo + cx * ms, "y": mox + cy * msy,
                                    "z": pz, "roll": 0, "pitch": pt, "yaw": 0}
+                cmd.pickup_pose["x"] = max(0.18, min(0.60, cmd.pickup_pose["x"]))
+                cmd.pickup_pose["y"] = max(-0.28, min(0.28, cmd.pickup_pose["y"]))
+                logger.info("[confirm] pick %s at (%.3f, %.3f, %.3f)",
+                            obj.name, cmd.pickup_pose["x"], cmd.pickup_pose["y"], pz)
                 cmd.detected_labels = [obj.name]
                 cmd.detected_objects = [obj]
                 return True

@@ -247,7 +247,8 @@ class StratusPipeline:
 
         # Workspace position unreachable - move to safe search position above workspace center
         logger.warning("[servo] pre_z IK failed (%.3f, %.3f) — moving to search position", pu["x"], pu["y"])
-        search_x, search_y = 0.40, 0.0
+        # Use a position within actual reachable workspace (X < 0.35)
+        search_x, search_y = 0.32, 0.0
         ok = self._arm.move_to_pose(search_x, search_y, pre_z, pitch=0.0, duration=5.0,
                                     frame_cb=self._update_preview)
         if not ok:
@@ -380,7 +381,7 @@ class StratusPipeline:
                 break
         
         logger.info("[micro] visual servoing complete at (%.3f, %.3f)", pu["x"], pu["y"])
-
+    
     def _exec_and_telemetry(self, cmd: TriageCommand) -> None:
         if self._arm:
             if not self._visual_servo(cmd):
@@ -448,8 +449,8 @@ class StratusPipeline:
 
                 # Try homography position with multiple pitch angles
                 cmd.pickup_pose = {"x": map_x, "y": map_y, "z": pz, "roll": 0, "pitch": pt, "yaw": 0}
-                cmd.pickup_pose["x"] = max(0.18, min(0.60, cmd.pickup_pose["x"]))
-                cmd.pickup_pose["y"] = max(-0.28, min(0.28, cmd.pickup_pose["y"]))
+                cmd.pickup_pose["x"] = max(0.25, min(0.50, cmd.pickup_pose["x"]))
+                cmd.pickup_pose["y"] = max(-0.20, min(0.20, cmd.pickup_pose["y"]))
                 
                 success = False
                 for pitch_try in [0.0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3]:
@@ -468,8 +469,8 @@ class StratusPipeline:
                     msy = self._classifier._map_scale_y if hasattr(self._classifier, '_map_scale_y') else 0.40
                     lin_x = mo + cx * ms
                     lin_y = mox + cy * msy
-                    lin_x = max(0.18, min(0.60, lin_x))
-                    lin_y = max(-0.28, min(0.28, lin_y))
+                    lin_x = max(0.25, min(0.50, lin_x))
+                    lin_y = max(-0.20, min(0.20, lin_y))
                     for pitch_try in [0.0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3]:
                         if self._try_pickup_pose(lin_x, lin_y, pz, pitch_try):
                             cmd.pickup_pose = {"x": lin_x, "y": lin_y, "z": pz, "roll": 0, "pitch": pitch_try, "yaw": 0}

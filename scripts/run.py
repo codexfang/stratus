@@ -50,6 +50,8 @@ def main():
     parser.add_argument("--arm-cam-width", type=int, default=640)
     parser.add_argument("--arm-cam-height", type=int, default=480)
     parser.add_argument("--classify-every", type=int, default=10)
+    parser.add_argument("--calibrate", action="store_true",
+                        help="Run workspace camera calibration before pipeline")
     args = parser.parse_args()
 
     print("=== Stratus Pipeline ===")
@@ -110,9 +112,21 @@ def main():
         )
         print("AWS mode — Rekognition + IoT Core")
 
-    if arm:
-        print("Connecting arm...")
-        arm.connect()
+    if args.calibrate:
+        from stratus.calibration import run_calibration_wizard
+        ok = run_calibration_wizard(
+            camera_index=args.camera,
+            width=args.cam_width,
+            height=args.cam_height,
+            arm=arm,
+            output=str(Path.home() / "stratus/calibration/workspace_cal.json")
+        )
+        if arm:
+            arm.disconnect()
+        camera.disconnect()
+        if arm_camera:
+            arm_camera.disconnect()
+        sys.exit(0 if ok else 1)
 
     print("Connecting camera...")
     camera.connect()

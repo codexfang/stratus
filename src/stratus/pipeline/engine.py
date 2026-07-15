@@ -45,10 +45,8 @@ class StratusPipeline:
         self._bg_frame = None
         self._current_objects: list[DetectedObject] = []
         self._selected_idx: int = 0
-        cv2.namedWindow("Stratus – Workspace")
-        cv2.setMouseCallback("Stratus – Workspace", self._on_mouse)
-        if arm_camera is not None:
-            cv2.namedWindow("Stratus – Arm Cam")
+        cv2.namedWindow("Stratus")
+        cv2.setMouseCallback("Stratus", self._on_mouse)
 
     def _on_mouse(self, event: int, x: int, y: int, flags: int, param) -> None:
         if event != cv2.EVENT_LBUTTONDOWN:
@@ -96,6 +94,30 @@ class StratusPipeline:
         cv2.rectangle(overlay, (x - 10, y - th - 8), (x + tw + 10, y + 6), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.5, display, 0.5, 0, display)
         cv2.putText(display, text, (x, y), font, 0.7, color, 2)
+
+    def _show_both(self, workspace: np.ndarray, arm_frame=None) -> None:
+        if arm_frame is not None:
+            h, w = workspace.shape[:2]
+            arm = arm_frame.image.copy()
+            ah = int(h * arm.shape[1] / arm.shape[0])
+            arm = cv2.resize(arm, (h, ah))
+            if ah < h:
+                pad = np.zeros((h - ah, arm.shape[1], 3), dtype=np.uint8)
+                arm = np.vstack([arm, pad])
+            elif ah > h:
+                arm = cv2.resize(arm, (h, h))
+            cv2.putText(workspace, "workspace", (8, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, WHITE, 2)
+            cv2.putText(arm, "arm cam", (8, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, WHITE, 2)
+            combined = np.hstack([workspace, arm])
+        else:
+            combined = workspace
+        max_w = 1600
+        if combined.shape[1] > max_w:
+            scale = max_w / combined.shape[1]
+            new_w = int(combined.shape[1] * scale)
+            new_h = int(combined.shape[0] * scale)
+            combined = cv2.resize(combined, (new_w, new_h))
+        cv2.imshow("Stratus", combined)
 
     def _classify(self, frame) -> TriageCommand | None:
         logger.info("Classifying...")
@@ -237,11 +259,8 @@ class StratusPipeline:
             self._draw_boxes(display, cmd.detected_objects, highlight=idx)
             bin_name = BIN_NAMES.get(cmd.target_bin, cmd.target_bin)
             self._bottom_bar(display, f"[{idx}] {name}  ->  {bin_name}", GREEN)
-            cv2.imshow("Stratus – Workspace", display)
-            if self._arm_camera is not None:
-                ac = self._arm_camera.read()
-                if ac is not None:
-                    cv2.imshow("Stratus – Arm Cam", ac.image)
+            ac = self._arm_camera.read() if self._arm_camera is not None else None
+            self._show_both(display, ac)
             key = cv2.waitKey(50) & 0xFF
             if key == ord('y'):
                 cx = (obj.left + obj.width / 2)
@@ -283,11 +302,8 @@ class StratusPipeline:
                 display = frame.image.copy()
                 self._draw_workspace(display)
                 self._bottom_bar(display, f"Clear workspace... {i}", (0, 255, 255))
-                cv2.imshow("Stratus – Workspace", display)
-                if self._arm_camera is not None:
-                    ac = self._arm_camera.read()
-                    if ac is not None:
-                        cv2.imshow("Stratus – Arm Cam", ac.image)
+                ac = self._arm_camera.read() if self._arm_camera is not None else None
+                self._show_both(display, ac)
                 cv2.waitKey(1)
                 time.sleep(0.05)
             cv2.waitKey(500)
@@ -321,13 +337,8 @@ class StratusPipeline:
                         self._bottom_bar(display, "scanning...", GRAY)
                 else:
                     self._bottom_bar(display, "scanning...", GRAY)
-                cv2.imshow("Stratus – Workspace", display)
-                if self._arm_camera is not None:
-                    ac = self._arm_camera.read()
-                    if ac is not None:
-                        ad = ac.image.copy()
-                        self._bottom_bar(ad, "arm cam — standby", GRAY)
-                        cv2.imshow("Stratus – Arm Cam", ad)
+                ac = self._arm_camera.read() if self._arm_camera is not None else None
+                self._show_both(display, ac)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     raise KeyboardInterrupt()
 

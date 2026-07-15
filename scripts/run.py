@@ -41,7 +41,7 @@ def main():
     parser.add_argument("--map-offset-y", type=float, default=-0.20)
     parser.add_argument("--map-scale-y", type=float, default=0.40)
     parser.add_argument("--pickup-z", type=float, default=0.15)
-    parser.add_argument("--pitch", type=float, default=0.2)
+    parser.add_argument("--pitch", type=float, default=0.0)
     parser.add_argument("--arm-cam-url", default="")
     parser.add_argument("--arm-cam-index", type=int, default=-1)
     parser.add_argument("--arm-cam-fov", type=float, default=60.0)
@@ -49,7 +49,7 @@ def main():
     parser.add_argument("--cam-height", type=int, default=720)
     parser.add_argument("--arm-cam-width", type=int, default=640)
     parser.add_argument("--arm-cam-height", type=int, default=480)
-    parser.add_argument("--classify-every", type=int, default=10)
+    parser.add_argument("--classify-every", type=int, default=3)
     parser.add_argument("--calibrate", action="store_true",
                         help="Run workspace camera calibration before pipeline")
     args = parser.parse_args()

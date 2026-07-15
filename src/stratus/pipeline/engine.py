@@ -297,6 +297,27 @@ class StratusPipeline:
             frame = self._camera.read()
             if frame is None:
                 continue
+            cmd.detected_labels = [obj.name]
+                cmd.detected_objects = [obj]
+                return True
+            if key == ord('n'):
+                return False
+            if key == ord('q'):
+                raise KeyboardInterrupt()
+        return False
+
+    def _try_pickup_pose(self, x: float, y: float, z: float, pitch: float) -> bool:
+        """Try to move to a pickup pose, return True if IK succeeds."""
+        return self._arm.move_to_pose(x, y, z, pitch=pitch, duration=0.5) is not False
+
+    def _confirm(self, cmd: TriageCommand) -> bool:
+        if not cmd.detected_objects:
+            logger.warning("[confirm] no detected objects")
+            return False
+        for _ in range(300):
+            frame = self._camera.read()
+            if frame is None:
+                continue
             idx = self._selected_idx
             if idx < 0 or idx >= len(cmd.detected_objects):
                 idx = 0
@@ -330,12 +351,46 @@ class StratusPipeline:
                     msy = self._classifier._map_scale_y if hasattr(self._classifier, '_map_scale_y') else 0.40
                     map_x = mo + cx * ms
                     map_y = mox + cy * msy
+                    logger.info("[confirm] linear map pick: (%.3f, %.3f)", map_x, map_y)
                 pz = self._classifier._pickup_z if hasattr(self._classifier, '_pickup_z') else 0.15
-                pt = self._classifier._pitch if hasattr(self._classifier, '_pitch') else 0.2
-                cmd.pickup_pose = {"x": map_x, "y": map_y,
-                                   "z": pz, "roll": 0, "pitch": pt, "yaw": 0}
+                pt = self._classifier._pitch if hasattr(self._classifier, '_pitch') else 0.0
+
+                # Try homography position with multiple pitch angles, fallback to linear map
+                cmd.pickup_pose = {"x": map_x, "y": map_y, "z": pz, "roll": 0, "pitch": pt, "yaw": 0}
                 cmd.pickup_pose["x"] = max(0.18, min(0.60, cmd.pickup_pose["x"]))
                 cmd.pickup_pose["y"] = max(-0.28, min(0.28, cmd.pickup_pose["y"]))
+                
+                # Try homography position with multiple pitches
+                success = False
+                for pitch_try in [0.0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3]:
+                    cmd.pickup_pose["pitch"] = pitch_try
+                    if self._try_pickup_pose(map_x, map_y, pz, pitch_try):
+                        logger.info("[confirm] reachable at pitch=%.2f", pitch_try)
+                        success = True
+                        break
+                
+                # If homography position unreachable, try linear map position
+                if not success:
+                    logger.warning("[confirm] homography position unreachable, trying linear map")
+                    mo = self._classifier._map_offset_x if hasattr(self._classifier, '_map_offset_x') else 0.15
+                    ms = self._classifier._map_scale_x if hasattr(self._classifier, '_map_scale_x') else 0.50
+                    mox = self._classifier._map_offset_y if hasattr(self._classifier, '_map_offset_y') else -0.20
+                    msy = self._classifier._map_scale_y if hasattr(self._classifier, '_map_scale_y') else 0.40
+                    lin_x = mo + cx * ms
+                    lin_y = mox + cy * msy
+                    lin_x = max(0.18, min(0.60, lin_x))
+                    lin_y = max(-0.28, min(0.28, lin_y))
+                    for pitch_try in [0.0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3]:
+                        if self._try_pickup_pose(lin_x, lin_y, pz, pitch_try):
+                            cmd.pickup_pose = {"x": lin_x, "y": lin_y, "z": pz, "roll": 0, "pitch": pitch_try, "yaw": 0}
+                            logger.info("[confirm] linear map reachable at pitch=%.2f", pitch_try)
+                            success = True
+                            break
+                
+                if not success:
+                    logger.error("[confirm] all pickup poses unreachable")
+                    return False
+
                 logger.info("[confirm] pick %s at (%.3f, %.3f, %.3f)",
                             obj.name, cmd.pickup_pose["x"], cmd.pickup_pose["y"], pz)
                 cmd.detected_labels = [obj.name]

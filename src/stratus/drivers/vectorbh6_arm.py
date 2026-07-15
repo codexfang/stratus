@@ -318,13 +318,14 @@ class VectorBH6ArmDriver:
             frame_cb()
         return ok
 
-    def _slew_mit(self, target: npt.NDArray[np.float64], duration: float = 4.0,
+    def _slew_mit(self, target: npt.NDArray[np.float64], duration: float = 6.0,
                   frame_cb: callable = None) -> None:
         q_start, _, _ = self._arm.get_state()
-        n = max(1, int(duration / 0.1))
+        n = max(1, int(duration / 0.05))
         dt = duration / n
         for i in range(1, n + 1):
-            alpha = i / n
+            t = i / n
+            alpha = (1 - np.cos(t * np.pi)) / 2
             q = q_start + alpha * (target - q_start)
             self._arm.mit(pos=q, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
             if self._gripper_hold_target is not None and self._gripper_motor is not None:
@@ -369,7 +370,7 @@ class VectorBH6ArmDriver:
         if not command.pickup_refined:
             logger.info("[triage] pre-approach up (z=%.3f)", pre_z)
             if not self.move_to_pose(x=px, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
-                                     duration=5.0, frame_cb=frame_cb):
+                                     duration=8.0, frame_cb=frame_cb):
                 logger.warning("pre-approach failed")
                 return False
 
@@ -380,7 +381,7 @@ class VectorBH6ArmDriver:
 
             logger.info("[triage] descend to pickup (z=%.3f)", pz)
             if not self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
-                                     duration=4.0, frame_cb=frame_cb):
+                                     duration=6.0, frame_cb=frame_cb):
                 logger.warning("descend failed")
                 return False
         else:
@@ -391,7 +392,7 @@ class VectorBH6ArmDriver:
                 self.gripper_open()
             logger.info("[triage] descend to pickup (z=%.3f)", pz)
             if not self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
-                                     duration=3.0, frame_cb=frame_cb):
+                                     duration=5.0, frame_cb=frame_cb):
                 logger.warning("descend failed")
                 return False
 
@@ -407,30 +408,30 @@ class VectorBH6ArmDriver:
         if not self.gripper_grip():
             logger.warning("[triage] first grip missed, re-approach")
             self.move_to_pose(x=px, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
-                              duration=2.0, frame_cb=frame_cb)
+                              duration=5.0, frame_cb=frame_cb)
             self.gripper_open()
             command.gripper_open_done = True
             self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
-                              duration=2.0, frame_cb=frame_cb)
+                              duration=5.0, frame_cb=frame_cb)
             if not self.gripper_grip():
                 logger.warning("[triage] second grip also missed")
 
         logger.info("[triage] lift (z=%.3f)", pre_z)
         self.move_to_pose(x=px, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
-                          duration=3.0, frame_cb=frame_cb)
+                          duration=6.0, frame_cb=frame_cb)
 
         if command.drop_joints is not None:
             target = np.deg2rad(command.drop_joints)
             logger.info("[triage] drop to joints %s", target)
             self._arm.stop_control_loop()
-            self._slew_mit(target, duration=5.0, frame_cb=frame_cb)
+            self._slew_mit(target, duration=8.0, frame_cb=frame_cb)
             self._endpos._q_target[:] = target
             self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
             time.sleep(0.5)
             if frame_cb:
                 frame_cb()
         elif command.drop_pose:
-            self.move_to_pose(**command.drop_pose, duration=5.0, frame_cb=frame_cb)
+            self.move_to_pose(**command.drop_pose, duration=8.0, frame_cb=frame_cb)
 
         logger.info("[triage] release")
         if frame_cb:

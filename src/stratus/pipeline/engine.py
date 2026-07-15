@@ -199,9 +199,8 @@ class StratusPipeline:
         return True
 
     def _micro_adjust(self, cmd: TriageCommand) -> None:
-        """Open gripper, descend to 10 cm above object, read arm camera ONCE,
-        apply a dampened XY correction, then set pickup_refined so execute_triage
-        goes straight to pickup z."""
+        """Open gripper at approach height, read arm camera for visual confirmation
+        (no XY correction — arm cam is on tripod, different frame)."""
         if not self._arm or not cmd.pickup_pose:
             return
         if self._arm_camera is None or not self._arm_camera.is_connected:
@@ -214,64 +213,17 @@ class StratusPipeline:
 
         self._arm.gripper_open()
         cmd.gripper_open_done = True
-        ok = self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch, duration=3.0,
+        ok = self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch, duration=4.0,
                                     frame_cb=self._update_preview)
         if not ok:
             logger.warning("[micro] approach_z IK failed (%.3f, %.3f) — unreachable", pu["x"], pu["y"])
             return
 
         frame = self._arm_camera.read()
-        if frame is None:
-            logger.warning("[micro] arm cam read failed, using workspace position")
-            return
-
-        refined = self._classifier.classify(frame)
-        self._update_preview()
-
-        best = None
-        for obj in refined.detected_objects:
-            if obj.name == target_name:
-                best = obj
-                break
-        if best is None and refined.detected_objects:
-            best = min(refined.detected_objects,
-                       key=lambda o: abs(o.left + o.width / 2 - 0.5)
-                                    + abs(o.top + o.height / 2 - 0.5))
-            logger.warning("[micro] target '%s' not found, using closest '%s'",
-                           target_name, best.name)
-        if best is None:
-            logger.warning("[micro] no objects in arm cam")
-            return
-
-        hfov_rad = np.deg2rad(self._arm_cam_fov)
-        ox = best.left + best.width / 2
-        oy = best.top + best.height / 2
-        ih, iw = frame.image.shape[:2]
-        vfov_rad = hfov_rad * ih / iw
-        cam_h = approach_z - pz
-        if cam_h <= 0.01:
-            cam_h = 0.10
-        scale_x = cam_h * 2 * np.tan(hfov_rad / 2)
-        scale_y = cam_h * 2 * np.tan(vfov_rad / 2)
-        dx = (ox - 0.5) * scale_x
-        dy = (oy - 0.5) * scale_y
-        damping = 0.3
-        dx *= damping
-        dy *= damping
-
-        obj_w_m = best.width * scale_x
-        pu["inset"] = min(max(obj_w_m * 0.4, 0.01), 0.08)
-
-        logger.info("[micro] obj=(%.3f,%.3f) corr=(%.3f,%.3f)m damp=%.1f size=%.3fm inset=%.3f",
-                    ox, oy, dx, dy, damping, obj_w_m, pu["inset"])
-
-        if abs(dx) > 0.002 or abs(dy) > 0.002:
-            pu["x"] += dx
-            pu["y"] += dy
-            pu["x"] = max(0.18, min(0.60, pu["x"]))
-            pu["y"] = max(-0.28, min(0.28, pu["y"]))
-            self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch,
-                                   duration=1.5, frame_cb=self._update_preview)
+        if frame is not None:
+            self._classifier.classify(frame)
+            self._update_preview()
+            logger.info("[micro] arm cam view at approach_z — using workspace position")
 
     def _exec_and_telemetry(self, cmd: TriageCommand) -> None:
         if self._arm:

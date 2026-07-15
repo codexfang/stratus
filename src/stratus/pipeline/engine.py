@@ -230,20 +230,35 @@ class StratusPipeline:
 
 
     def _visual_servo(self, cmd: TriageCommand) -> bool:
-        """Move to pre-approach height at the stationary-camera estimated position.
-        Returns False if unreachable."""
+        """Move to pre-approach height. If workspace-camera position unreachable,
+        move to safe search position and let _micro_adjust visually servo."""
         if not self._arm or not cmd.pickup_pose:
             return True
         pu = cmd.pickup_pose
         pre_z = max(pu["z"] + 0.20, 0.30)
         pitch = pu.get("pitch", 0)
 
+        # Try the workspace-camera position first
         ok = self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=5.0,
                                     frame_cb=self._update_preview)
+        if ok:
+            cmd.pickup_refined = True
+            return True
+
+        # Workspace position unreachable - move to safe search position above workspace center
+        logger.warning("[servo] pre_z IK failed (%.3f, %.3f) — moving to search position", pu["x"], pu["y"])
+        search_x, search_y = 0.40, 0.0
+        ok = self._arm.move_to_pose(search_x, search_y, pre_z, pitch=0.0, duration=5.0,
+                                    frame_cb=self._update_preview)
         if not ok:
-            logger.warning("[servo] pre_z IK failed (%.3f, %.3f) — unreachable", pu["x"], pu["y"])
+            logger.error("[servo] search position also unreachable")
             return False
+        
+        # Mark as refined so _micro_adjust knows to use current position as base
         cmd.pickup_refined = True
+        # Override pickup_pose with search position as starting point
+        cmd.pickup_pose["x"] = search_x
+        cmd.pickup_pose["y"] = search_y
         return True
 
     def _micro_adjust(self, cmd: TriageCommand) -> None:
@@ -293,8 +308,34 @@ class StratusPipeline:
                            key=lambda o: abs(o.left + o.width/2 - 0.5) + abs(o.top + o.height/2 - 0.5))
             
             if best is None:
-                logger.warning("[micro] target '%s' not found in arm cam", target_name)
-                break
+                logger.warning("[micro] target '%s' not found in arm cam — searching", target_name)
+                # Small search spiral
+                search_offsets = [(0.02, 0), (0, 0.02), (-0.02, 0), (0, -0.02),
+                                 (0.03, 0.03), (-0.03, 0.03), (-0.03, -0.03), (0.03, -0.03)]
+                found = False
+                for sx, sy in search_offsets:
+                    search_x = pu["x"] + sx
+                    search_y = pu["y"] + sy
+                    ok = self._arm.move_to_pose(search_x, search_y, approach_z, pitch=pitch, duration=1.5,
+                                                frame_cb=self._update_preview)
+                    if not ok:
+                        continue
+                    frame = self._arm_camera.read()
+                    if frame is None:
+                        continue
+                    result = self._classifier.classify(frame)
+                    self._update_preview()
+                    for obj in result.detected_objects:
+                        if obj.name == target_name:
+                            best = obj
+                            found = True
+                            logger.info("[micro] found target at search offset (%.2f, %.2f)", sx, sy)
+                            break
+                    if found:
+                        break
+                if not found:
+                    logger.error("[micro] target not found in search pattern")
+                    break
             
             # Compute offset from image center
             cx = best.left + best.width / 2
@@ -437,8 +478,11 @@ class StratusPipeline:
                             break
                 
                 if not success:
-                    logger.error("[confirm] all pickup poses unreachable")
-                    return False
+                    logger.warning("[confirm] all static poses unreachable — visual servoing will find reachable pose")
+                    # Don't fail - visual servoing will find reachable pose
+                    # Use the linear map position as starting point
+                    cmd.pickup_pose = {"x": lin_x, "y": lin_y, "z": pz, "roll": 0, "pitch": pt, "yaw": 0}
+                    success = True
 
                 logger.info("[confirm] pick %s at (%.3f, %.3f, %.3f)",
                             obj.name, cmd.pickup_pose["x"], cmd.pickup_pose["y"], pz)

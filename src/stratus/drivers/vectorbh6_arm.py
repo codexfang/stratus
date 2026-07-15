@@ -252,10 +252,9 @@ class VectorBH6ArmDriver:
         ok = self._gripper_cmd(target)
         if not ok:
             logger.warning("[gripper] grip cmd failed")
-            self._gripper_hold_target = target
+            self.gripper_open()
             return False
 
-        self._gripper_hold_target = target
         st = None
         for _ in range(5):
             self._gripper_motor.request_feedback()
@@ -267,6 +266,20 @@ class VectorBH6ArmDriver:
                 break
 
         if st is None:
+            self.gripper_open()
+            return False
+
+        actual = st.pos
+        delta = abs(actual - target)
+
+        if delta > 0.5:
+            logger.info("[gripper] object at pos=%.3f (delta=%.3f) — gripped", actual, delta)
+            self._gripper_hold_target = target
+            return True
+        else:
+            logger.info("[gripper] no object pos=%.3f (delta=%.3f) — missed", actual, delta)
+            self.gripper_open()
+            return False
             return True
 
         actual = st.pos
@@ -379,45 +392,39 @@ class VectorBH6ArmDriver:
                 frame_cb()
             self.gripper_open()
 
-            logger.info("[triage] descend to pickup (z=%.3f)", pz)
-            if not self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
-                                     duration=6.0, frame_cb=frame_cb):
-                logger.warning("descend failed")
+            logger.info("[triage] descend to approach (z=%.3f)", pz + 0.05)
+            if not self.move_to_pose(x=px, y=py, z=pz + 0.05, roll=0, pitch=pitch, yaw=0,
+                                     duration=5.0, frame_cb=frame_cb):
+                logger.warning("approach failed")
                 return False
         else:
-            logger.info("[triage] refined — open gripper & descend")
+            logger.info("[triage] refined — descend to approach")
             if not command.gripper_open_done:
                 if frame_cb:
                     frame_cb()
                 self.gripper_open()
-            logger.info("[triage] descend to pickup (z=%.3f)", pz)
-            if not self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
+            logger.info("[triage] descend to approach (z=%.3f)", pz + 0.05)
+            if not self.move_to_pose(x=px, y=py, z=pz + 0.05, roll=0, pitch=pitch, yaw=0,
                                      duration=5.0, frame_cb=frame_cb):
-                logger.warning("descend failed")
+                logger.warning("approach failed")
                 return False
 
-        logger.info("[triage] descend to pickup (z=%.3f)", pz)
-        if not self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
+        logger.info("[triage] small forward & down for grip")
+        if not self.move_to_pose(x=px + 0.02, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
                                  duration=3.0, frame_cb=frame_cb):
-            logger.warning("descend failed")
+            logger.warning("final approach failed")
             return False
 
         logger.info("[triage] grip object")
         if frame_cb:
             frame_cb()
         if not self.gripper_grip():
-            logger.warning("[triage] first grip missed, re-approach")
-            self.move_to_pose(x=px, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
-                              duration=5.0, frame_cb=frame_cb)
-            self.gripper_open()
-            command.gripper_open_done = True
-            self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
-                              duration=5.0, frame_cb=frame_cb)
+            logger.warning("[triage] grip missed — retry at same pose")
             if not self.gripper_grip():
                 logger.warning("[triage] second grip also missed")
 
         logger.info("[triage] lift (z=%.3f)", pre_z)
-        self.move_to_pose(x=px, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
+        self.move_to_pose(x=px + 0.02, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
                           duration=6.0, frame_cb=frame_cb)
 
         if command.drop_joints is not None:

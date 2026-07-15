@@ -21,7 +21,7 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 1.0
+    open_pos: float = 2.0
     close_pos: float = -5.0
     mit_kp: float = 10.0
     mit_kd: float = 1.0
@@ -225,8 +225,8 @@ class VectorBH6ArmDriver:
                         "slewing (%.1fs)", x, y, z, pitch, np.round(q_ik, 3), duration)
             self._arm.stop_control_loop()
             self._slew_mit(q_ik, duration)
-            self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
             self._endpos._q_target[:] = q_ik
+            self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
             self._arm._request_and_poll()
             q, _, _ = self._arm.get_state()
             err = np.max(np.abs(q - q_ik))
@@ -260,7 +260,9 @@ class VectorBH6ArmDriver:
         py = pu.get("y", 0)
         pz = pu.get("z", 0)
         pitch = pu.get("pitch", 0)
-        inset = self._gripper_cfg.approach_inset if self._gripper_cfg else 0.03
+        inset = pu.get("inset")
+        if inset is None:
+            inset = self._gripper_cfg.approach_inset if self._gripper_cfg else 0.03
 
         logger.info("[triage] start: %s", command.detected_labels[:3])
 
@@ -296,8 +298,8 @@ class VectorBH6ArmDriver:
             logger.info("[triage] drop to joints %s", target)
             self._arm.stop_control_loop()
             self._slew_mit(target, duration=5.0)
-            self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
             self._endpos._q_target[:] = target
+            self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
             time.sleep(0.5)
         elif command.drop_pose:
             self.move_to_pose(**command.drop_pose, duration=5.0)
@@ -310,9 +312,9 @@ class VectorBH6ArmDriver:
         time.sleep(0.5)
         self._arm.stop_control_loop()
         self._slew_mit(np.zeros(6), duration=6.0)
+        self._endpos._q_target[:] = np.zeros(6)
         time.sleep(0.5)
         self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
-        self._endpos._q_target[:] = np.zeros(6)
         time.sleep(0.5)
         logger.info("[triage] done")
         return True

@@ -141,8 +141,9 @@ class StratusPipeline:
 
     def _arm_camera_center(self, pu: dict, target_name: str, pre_z: float, pitch: float) -> None:
         """Eye-in-hand servoing: center target object in arm-mounted camera frame.
-        The arm camera moves with the gripper, so the object's pixel position
-        changes as the arm approaches — true closed-loop correction."""
+        Also computes object width for adaptive approach inset. The arm camera
+        moves with the gripper, so the object's pixel position changes as the
+        arm approaches — true closed-loop correction."""
         hfov_rad = np.deg2rad(self._arm_cam_fov)
 
         for iteration in range(3):
@@ -177,8 +178,12 @@ class StratusPipeline:
             dx = dx_px * scale_x
             dy = dy_px * scale_y
 
-            logger.info("[arm-servo] iter=%d obj=(%.3f,%.3f) offset=(%.3f,%.3f) corr=(%.3f,%.3f) h=%.3f",
-                        iteration, ox, oy, dx_px, dy_px, dx, dy, cam_h)
+            obj_w_m = best.width * scale_x
+            obj_h_m = best.height * scale_y
+            pu["inset"] = min(max(obj_w_m * 0.4, 0.01), 0.08)
+            logger.info("[arm-servo] iter=%d obj=(%.3f,%.3f) offset=(%.3f,%.3f) corr=(%.3f,%.3f) "
+                        "h=%.3f size=(%.3f,%.3f)m inset=%.3f",
+                        iteration, ox, oy, dx_px, dy_px, dx, dy, cam_h, obj_w_m, obj_h_m, pu["inset"])
 
             pu["x"] += dx
             pu["y"] += dy

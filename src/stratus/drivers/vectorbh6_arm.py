@@ -199,11 +199,8 @@ class VectorBH6ArmDriver:
         if self._gripper_motor is None:
             logger.info("[gripper] no motor")
             return
-        grip_pos = self._gripper_cfg.close_pos
-        if grip_pos < -2.0:
-            grip_pos = -2.0
-        self._gripper_cmd(grip_pos)
-        logger.info("[gripper] grip -> %.2f", grip_pos)
+        self._gripper_cmd(self._gripper_cfg.close_pos)
+        logger.info("[gripper] grip -> %.2f", self._gripper_cfg.close_pos)
 
     def get_observation(self) -> ArmObservation:
         pos, vel, torq = self._arm.get_state()
@@ -216,7 +213,7 @@ class VectorBH6ArmDriver:
 
     def move_to_pose(self, x: float, y: float, z: float,
                      roll: float = 0, pitch: float = 0, yaw: float = 0,
-                     duration: float = 4.0) -> bool:
+                     duration: float = 4.0, frame_cb: callable = None) -> bool:
         if self._endpos is None:
             return False
         ok = self._endpos.move_to_ik(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw)
@@ -225,7 +222,7 @@ class VectorBH6ArmDriver:
             logger.info("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK ok (joints=%s), "
                         "slewing (%.1fs)", x, y, z, pitch, np.round(q_ik, 3), duration)
             self._arm.stop_control_loop()
-            self._slew_mit(q_ik, duration)
+            self._slew_mit(q_ik, duration, frame_cb=frame_cb)
             self._endpos._q_target[:] = q_ik
             self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
             self._arm._request_and_poll()
@@ -240,9 +237,12 @@ class VectorBH6ArmDriver:
         else:
             logger.warning("move_to_pose target=(%.3f, %.3f, %.3f, pitch=%.2f) IK failed",
                            x, y, z, pitch)
+        if frame_cb:
+            frame_cb()
         return ok
 
-    def _slew_mit(self, target: npt.NDArray[np.float64], duration: float = 4.0) -> None:
+    def _slew_mit(self, target: npt.NDArray[np.float64], duration: float = 4.0,
+                  frame_cb: callable = None) -> None:
         q_start, _, _ = self._arm.get_state()
         n = max(1, int(duration / 0.1))
         dt = duration / n
@@ -252,10 +252,14 @@ class VectorBH6ArmDriver:
             self._arm.mit(pos=q, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
             time.sleep(dt)
             cv2.waitKey(1)
+            if frame_cb:
+                frame_cb()
         self._arm.mit(pos=target, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
         cv2.waitKey(1)
+        if frame_cb:
+            frame_cb()
 
-    def execute_triage(self, command: TriageCommand) -> bool:
+    def execute_triage(self, command: TriageCommand, frame_cb: callable = None) -> bool:
         if not command.pickup_pose:
             return False
         pu = command.pickup_pose
@@ -273,54 +277,79 @@ class VectorBH6ArmDriver:
 
         if not command.pickup_refined:
             logger.info("[triage] pre-approach up (z=%.3f)", pre_z)
-            if not self.move_to_pose(x=px, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0, duration=5.0):
+            if not self.move_to_pose(x=px, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
+                                     duration=5.0, frame_cb=frame_cb):
                 logger.warning("pre-approach failed")
                 return False
         else:
             logger.info("[triage] pickup already refined by camera, skipping pre-approach")
 
         logger.info("[triage] open gripper (above object)")
+        if frame_cb:
+            frame_cb()
         self.gripper_open()
 
         logger.info("[triage] descend to pickup (z=%.3f)", pz)
-        if not self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0, duration=4.0):
+        if not self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
+                                 duration=4.0, frame_cb=frame_cb):
             logger.warning("descend failed")
             return False
 
         logger.info("[triage] move in forward (%.3f m)", inset)
-        self.move_to_pose(x=px + inset, y=py, z=pz, roll=0, pitch=pitch, yaw=0, duration=2.0)
+        self.move_to_pose(x=px + inset, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
+                          duration=2.0, frame_cb=frame_cb)
 
         logger.info("[triage] grip object")
+        if frame_cb:
+            frame_cb()
         self.gripper_grip()
 
         logger.info("[triage] lift (z=%.3f)", pre_z)
-        self.move_to_pose(x=px + inset, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0, duration=3.0)
+        self.move_to_pose(x=px + inset, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
+                          duration=3.0, frame_cb=frame_cb)
 
         if command.drop_joints is not None:
             target = np.deg2rad(command.drop_joints)
             logger.info("[triage] drop to joints %s", target)
             self._arm.stop_control_loop()
-            self._slew_mit(target, duration=5.0)
+            self._slew_mit(target, duration=5.0, frame_cb=frame_cb)
             self._endpos._q_target[:] = target
             self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
             time.sleep(0.5)
+            if frame_cb:
+                frame_cb()
         elif command.drop_pose:
-            self.move_to_pose(**command.drop_pose, duration=5.0)
+            self.move_to_pose(**command.drop_pose, duration=5.0, frame_cb=frame_cb)
 
         logger.info("[triage] release")
+        if frame_cb:
+            frame_cb()
         self.gripper_open()
 
         logger.info("[triage] return home")
-        self.move_to_pose(x=0, y=0, z=0.30, pitch=0, duration=6.0)
+        self._safe_return_home(frame_cb)
+        logger.info("[triage] done")
+        return True
+
+    def _safe_return_home(self, frame_cb: callable = None) -> None:
+        home_poses = [(0, 0, 0.25), (0.10, 0, 0.25), (0, 0.10, 0.25),
+                      (0.10, 0.10, 0.30)]
+        for px, py, pz in home_poses:
+            if self.move_to_pose(x=px, y=py, z=pz, pitch=0, duration=5.0,
+                                 frame_cb=frame_cb):
+                logger.info("[triage] returned to (%.2f, %.2f, %.2f)", px, py, pz)
+                break
         time.sleep(0.5)
+        if frame_cb:
+            frame_cb()
         self._arm.stop_control_loop()
-        self._slew_mit(np.zeros(6), duration=6.0)
+        self._slew_mit(np.zeros(6), duration=6.0, frame_cb=frame_cb)
         self._endpos._q_target[:] = np.zeros(6)
         time.sleep(0.5)
         self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
         time.sleep(0.5)
-        logger.info("[triage] done")
-        return True
+        if frame_cb:
+            frame_cb()
 
     def disable(self) -> None:
         self._arm.disable()

@@ -47,7 +47,23 @@ class StratusPipeline:
         self._selected_idx: int = 0
         self._last_arm_frame = None
         self._arm_frame_counter = 0
+        self._update_preview_counter = 0
         cv2.namedWindow("Stratus")
+
+    def _update_preview(self) -> None:
+        """Read both cameras and refresh the combined display.
+        Call this during arm movement to keep preview live."""
+        self._update_preview_counter += 1
+        frame = self._camera.read()
+        if frame is None:
+            return
+        display = frame.image.copy()
+        self._last_h, self._last_w = display.shape[:2]
+        self._draw_workspace(display)
+        if self._arm_camera is not None and self._update_preview_counter % 5 == 0:
+            self._last_arm_frame = self._arm_camera.read()
+        self._show_both(display, self._last_arm_frame)
+        cv2.waitKey(1)
         cv2.setMouseCallback("Stratus", self._on_mouse)
 
     def _on_mouse(self, event: int, x: int, y: int, flags: int, param) -> None:
@@ -176,20 +192,26 @@ class StratusPipeline:
                 if frame is not None:
                     break
                 logger.warning("[arm-servo] arm cam read failed (retry %d)", retry)
-                cv2.waitKey(100)
+                self._update_preview()
             if frame is None:
                 logger.error("[arm-servo] arm cam not streaming — falling back to fixed cam")
                 return
 
             refined = self._classifier.classify(frame)
-            cv2.waitKey(1)
+            self._update_preview()
             best = None
             for obj in refined.detected_objects:
                 if obj.name == target_name:
                     best = obj
                     break
+            if best is None and refined.detected_objects:
+                best = min(refined.detected_objects,
+                           key=lambda o: abs(o.left + o.width / 2 - 0.5)
+                                        + abs(o.top + o.height / 2 - 0.5))
+                logger.warning("[arm-servo] target '%s' not found, using closest '%s'",
+                               target_name, best.name)
             if best is None:
-                logger.warning("[arm-servo] target '%s' not found in arm cam", target_name)
+                logger.warning("[arm-servo] no objects at all in arm cam — aborting centering")
                 break
 
             ox = best.left + best.width / 2
@@ -212,15 +234,16 @@ class StratusPipeline:
             obj_w_m = best.width * scale_x
             obj_h_m = best.height * scale_y
             pu["inset"] = min(max(obj_w_m * 0.4, 0.01), 0.08)
-            logger.info("[arm-servo] iter=%d obj=(%.3f,%.3f) offset=(%.3f,%.3f) corr=(%.3f,%.3f) "
+            logger.info("[arm-servo] iter=%d obj=(%.3f,%.3f) '%s' offset=(%.3f,%.3f) corr=(%.3f,%.3f) "
                         "h=%.3f cam=%dx%d size=(%.3f,%.3f)m inset=%.3f",
-                        iteration, ox, oy, dx_px, dy_px, dx, dy, cam_h,
+                        iteration, ox, oy, best.name, dx_px, dy_px, dx, dy, cam_h,
                         iw, ih, obj_w_m, obj_h_m, pu["inset"])
 
             pu["x"] += dx
             pu["y"] += dy
-            self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=2.0)
-            cv2.waitKey(1)
+            self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=2.0,
+                                   frame_cb=self._update_preview)
+            self._update_preview()
 
     def _visual_servo(self, cmd: TriageCommand) -> None:
         """Two-stage visual servoing:
@@ -233,7 +256,8 @@ class StratusPipeline:
         pitch = pu.get("pitch", 0)
         target_name = cmd.detected_labels[0] if cmd.detected_labels else ""
 
-        self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=5.0)
+        self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=5.0,
+                               frame_cb=self._update_preview)
 
         if self._arm_camera is not None and self._arm_camera.is_connected:
             logger.info("[servo] arm camera available — eye-in-hand centering")
@@ -246,7 +270,7 @@ class StratusPipeline:
     def _exec_and_telemetry(self, cmd: TriageCommand) -> None:
         if self._arm:
             self._visual_servo(cmd)
-            self._arm.execute_triage(cmd)
+            self._arm.execute_triage(cmd, frame_cb=self._update_preview)
         if self._telemetry:
             drop = cmd.drop_joints or cmd.drop_pose
             self._telemetry.publish(TelemetryEvent(event_type="classification", payload={
@@ -306,6 +330,12 @@ class StratusPipeline:
             logger.error("No camera frame")
             return
 
+        if self._arm_camera is not None:
+            for _ in range(5):
+                self._last_arm_frame = self._arm_camera.read()
+                if self._last_arm_frame is not None:
+                    break
+                time.sleep(0.2)
         if self._show_preview:
             for i in range(30, 0, -1):
                 frame = self._camera.read()

@@ -314,13 +314,25 @@ class StratusPipeline:
             if key == ord('y'):
                 cx = (obj.left + obj.width / 2)
                 cy = (obj.top + obj.height / 2)
-                mo = self._classifier._map_offset_x if hasattr(self._classifier, '_map_offset_x') else 0.15
-                ms = self._classifier._map_scale_x if hasattr(self._classifier, '_map_scale_x') else 0.50
-                mox = self._classifier._map_offset_y if hasattr(self._classifier, '_map_offset_y') else -0.20
-                msy = self._classifier._map_scale_y if hasattr(self._classifier, '_map_scale_y') else 0.40
+                # Use calibration homography if available, else linear map
+                if hasattr(self._classifier, '_use_calibration') and self._classifier._use_calibration and self._classifier._homography is not None:
+                    H = self._classifier._homography
+                    h, w = frame.image.shape[:2]
+                    pt = np.array([cx * w, cy * h, 1.0], dtype=np.float32)
+                    proj = H @ pt
+                    map_x, map_y = proj[0] / proj[2], proj[1] / proj[2]
+                    logger.info("[confirm] calibrated pick: (%.3f, %.3f) from pixel (%.1f, %.1f)",
+                                map_x, map_y, cx * w, cy * h)
+                else:
+                    mo = self._classifier._map_offset_x if hasattr(self._classifier, '_map_offset_x') else 0.15
+                    ms = self._classifier._map_scale_x if hasattr(self._classifier, '_map_scale_x') else 0.50
+                    mox = self._classifier._map_offset_y if hasattr(self._classifier, '_map_offset_y') else -0.20
+                    msy = self._classifier._map_scale_y if hasattr(self._classifier, '_map_scale_y') else 0.40
+                    map_x = mo + cx * ms
+                    map_y = mox + cy * msy
                 pz = self._classifier._pickup_z if hasattr(self._classifier, '_pickup_z') else 0.15
                 pt = self._classifier._pitch if hasattr(self._classifier, '_pitch') else 0.2
-                cmd.pickup_pose = {"x": mo + cx * ms, "y": mox + cy * msy,
+                cmd.pickup_pose = {"x": map_x, "y": map_y,
                                    "z": pz, "roll": 0, "pitch": pt, "yaw": 0}
                 cmd.pickup_pose["x"] = max(0.18, min(0.60, cmd.pickup_pose["x"]))
                 cmd.pickup_pose["y"] = max(-0.28, min(0.28, cmd.pickup_pose["y"]))

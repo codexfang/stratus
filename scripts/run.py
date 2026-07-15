@@ -35,7 +35,7 @@ def main():
     parser.add_argument("--settle-time", type=float, default=4.0)
     parser.add_argument("--approach-inset", type=float, default=0.03)
     parser.add_argument("--model", default="")
-    parser.add_argument("--conf", type=float, default=0.05)
+    parser.add_argument("--conf", type=float, default=0.30)
     parser.add_argument("--map-offset-x", type=float, default=0.15)
     parser.add_argument("--map-scale-x", type=float, default=0.50)
     parser.add_argument("--map-offset-y", type=float, default=-0.20)

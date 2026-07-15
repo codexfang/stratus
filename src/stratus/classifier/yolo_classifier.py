@@ -30,7 +30,7 @@ CALIBRATION_PATH = Path.home() / "stratus/calibration/workspace_cal.json"
 
 class YOLOClassifier:
     def __init__(self, model_path: str = "models/yolov8s-world.pt",
-                 conf_threshold: float = 0.30,
+                 conf_threshold: float = 0.15,
                  map_offset_x: float = 0.15, map_scale_x: float = 0.50,
                  map_offset_y: float = -0.20, map_scale_y: float = 0.40,
                  pickup_z: float = 0.15, pitch: float = 0.2):

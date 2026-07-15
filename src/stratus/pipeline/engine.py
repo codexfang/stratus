@@ -289,23 +289,6 @@ class StratusPipeline:
                 "drop": drop, "grade": cmd.label,
             }))
 
-    def _confirm(self, cmd: TriageCommand) -> bool:
-        if not cmd.detected_objects:
-            logger.warning("[confirm] no detected objects")
-            return False
-        for _ in range(300):
-            frame = self._camera.read()
-            if frame is None:
-                continue
-            cmd.detected_labels = [obj.name]
-                cmd.detected_objects = [obj]
-                return True
-            if key == ord('n'):
-                return False
-            if key == ord('q'):
-                raise KeyboardInterrupt()
-        return False
-
     def _try_pickup_pose(self, x: float, y: float, z: float, pitch: float) -> bool:
         """Try to move to a pickup pose, return True if IK succeeds."""
         return self._arm.move_to_pose(x, y, z, pitch=pitch, duration=0.5) is not False
@@ -355,12 +338,11 @@ class StratusPipeline:
                 pz = self._classifier._pickup_z if hasattr(self._classifier, '_pickup_z') else 0.15
                 pt = self._classifier._pitch if hasattr(self._classifier, '_pitch') else 0.0
 
-                # Try homography position with multiple pitch angles, fallback to linear map
+                # Try homography position with multiple pitch angles
                 cmd.pickup_pose = {"x": map_x, "y": map_y, "z": pz, "roll": 0, "pitch": pt, "yaw": 0}
                 cmd.pickup_pose["x"] = max(0.18, min(0.60, cmd.pickup_pose["x"]))
                 cmd.pickup_pose["y"] = max(-0.28, min(0.28, cmd.pickup_pose["y"]))
                 
-                # Try homography position with multiple pitches
                 success = False
                 for pitch_try in [0.0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3]:
                     cmd.pickup_pose["pitch"] = pitch_try

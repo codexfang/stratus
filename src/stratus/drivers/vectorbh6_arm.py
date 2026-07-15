@@ -139,16 +139,16 @@ class VectorBH6ArmDriver:
         except Exception as e:
             logger.warning("Gripper init failed: %s", e)
 
-    def _gripper_cmd(self, pos: float) -> None:
+    def _gripper_cmd(self, pos: float) -> bool:
         if self._gripper_motor is None:
-            return
+            return False
         from motorbridge import Mode
         cfg = self._gripper_cfg
         ctrl = self._arm._ctrl_map.get("damiao")
         for retry in range(3):
             try:
                 st = None
-                for _ in range(3):
+                for _ in range(5):
                     self._gripper_motor.request_feedback()
                     time.sleep(0.02)
                     if ctrl:
@@ -160,14 +160,28 @@ class VectorBH6ArmDriver:
                 if st is not None and st.status_code != 1:
                     logger.warning("[gripper] status=%d before cmd, clearing error", st.status_code)
                     self._gripper_motor.clear_error()
-                    time.sleep(0.2)
-                    self._gripper_motor.enable()
-                    time.sleep(0.2)
-                    self._gripper_motor.ensure_mode(Mode.MIT, 1000)
                     time.sleep(0.3)
+                    self._gripper_motor.enable()
+                    time.sleep(0.3)
+                    self._gripper_motor.ensure_mode(Mode.MIT, 1000)
+                    time.sleep(0.5)
+                    st = None
+                    for _ in range(5):
+                        self._gripper_motor.request_feedback()
+                        time.sleep(0.02)
+                        if ctrl:
+                            ctrl.poll_feedback_once()
+                        st = self._gripper_motor.get_state()
+                        if st is not None:
+                            break
+                        time.sleep(0.05)
+                if st is None or st.status_code != 1:
+                    logger.warning("[gripper] motor not ready (status=%s), retry %d",
+                                   st.status_code if st else 'None', retry)
+                    continue
                 self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
-                time.sleep(cfg.settle_time)
-                for _ in range(5):
+                for _ in range(int(cfg.settle_time / 0.5)):
+                    time.sleep(0.5)
                     self._gripper_motor.request_feedback()
                     time.sleep(0.02)
                     if ctrl:
@@ -176,18 +190,20 @@ class VectorBH6ArmDriver:
                     if st is not None:
                         logger.info("[gripper] retry=%d pos=%.3f status=%d (target=%.1f)",
                                     retry, st.pos, st.status_code, pos)
-                        break
-                    time.sleep(0.1)
-                return
+                        if st.status_code == 1:
+                            return True
             except Exception as e:
                 logger.warning("[gripper] cmd failed (retry %d): %s", retry, e)
+        logger.warning("[gripper] cmd to %.1f failed after 3 retries", pos)
+        return False
 
     def gripper_open(self) -> None:
         if self._gripper_motor is None:
             logger.info("[gripper] no motor")
             return
-        self._gripper_cmd(self._gripper_cfg.open_pos)
-        logger.info("[gripper] open -> %.2f", self._gripper_cfg.open_pos)
+        ok = self._gripper_cmd(self._gripper_cfg.open_pos)
+        logger.info("[gripper] open -> %.2f %s", self._gripper_cfg.open_pos,
+                    "ok" if ok else "FAILED")
 
     def gripper_close(self) -> None:
         if self._gripper_motor is None:
@@ -200,26 +216,16 @@ class VectorBH6ArmDriver:
         if self._gripper_motor is None:
             logger.info("[gripper] no motor")
             return
-        from motorbridge import Mode
-        for attempt in range(2):
-            self._gripper_cmd(self._gripper_cfg.grip_pos)
-            st = self._gripper_motor.get_state()
-            if st is not None and st.status_code == 1:
-                logger.info("[gripper] grip -> %.2f (ok)", self._gripper_cfg.grip_pos)
-                return
-            logger.warning("[gripper] grip attempt %d got status=%d, recovering", attempt, st.status_code if st else -1)
-            self._gripper_motor.clear_error()
-            time.sleep(0.3)
-            self._gripper_motor.enable()
-            time.sleep(0.3)
-            self._gripper_motor.ensure_mode(Mode.MIT, 1000)
-            time.sleep(0.5)
+        ok = self._gripper_cmd(self._gripper_cfg.grip_pos)
+        if not ok:
+            logger.warning("[gripper] grip failed, trying gentle ramp")
             half = self._gripper_cfg.grip_pos * 0.5
             self._gripper_motor.send_mit(half, 0.0, self._gripper_cfg.mit_kp,
                                         self._gripper_cfg.mit_kd, 0.0)
             time.sleep(2.0)
-        self._gripper_cmd(self._gripper_cfg.grip_pos)
-        logger.info("[gripper] grip -> %.2f", self._gripper_cfg.grip_pos)
+            ok = self._gripper_cmd(self._gripper_cfg.grip_pos)
+        logger.info("[gripper] grip -> %.2f %s", self._gripper_cfg.grip_pos,
+                    "ok" if ok else "FAILED")
 
     def get_observation(self) -> ArmObservation:
         pos, vel, torq = self._arm.get_state()
@@ -351,42 +357,19 @@ class VectorBH6ArmDriver:
         return True
 
     def _safe_return_home(self, frame_cb: callable = None) -> None:
-        home_poses = [(0, 0, 0.25), (0.10, 0, 0.25), (0, 0.10, 0.25),
-                      (0.10, 0.10, 0.30)]
-        reached_cart = False
-        for px, py, pz in home_poses:
-            if self.move_to_pose(x=px, y=py, z=pz, pitch=0, duration=5.0,
-                                 frame_cb=frame_cb):
-                logger.info("[triage] returned to (%.2f, %.2f, %.2f)", px, py, pz)
-                reached_cart = True
-                break
-        if not reached_cart:
-            logger.info("[triage] Cartesian home failed, joint-space intermediate approach")
-            q, _, _ = self._arm.get_state()
-            mid = q * 0.5
-            self._arm.stop_control_loop()
-            self._slew_mit(mid, duration=4.0, frame_cb=frame_cb)
-            self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
-            time.sleep(0.3)
-            if frame_cb:
-                frame_cb()
-            for px, py, pz in home_poses:
-                if self.move_to_pose(x=px, y=py, z=pz, pitch=0, duration=5.0,
-                                     frame_cb=frame_cb):
-                    logger.info("[triage] returned to (%.2f, %.2f, %.2f) after mid-slew", px, py, pz)
-                    reached_cart = True
-                    break
-        time.sleep(0.5)
-        if frame_cb:
-            frame_cb()
+        q, _, _ = self._arm.get_state()
+        logger.info("[triage] returning home from joints %s", np.round(q, 3))
+
         self._arm.stop_control_loop()
-        self._slew_mit(np.zeros(6), duration=6.0, frame_cb=frame_cb)
+        mid = q * 0.4
+        self._slew_mit(mid, duration=3.0, frame_cb=frame_cb)
+        self._slew_mit(np.zeros(6), duration=5.0, frame_cb=frame_cb)
         self._endpos._q_target[:] = np.zeros(6)
-        time.sleep(0.5)
         self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
         time.sleep(0.5)
         if frame_cb:
             frame_cb()
+        logger.info("[triage] home")
 
     def disable(self) -> None:
         self._arm.disable()

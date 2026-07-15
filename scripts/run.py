@@ -45,6 +45,8 @@ def main():
     parser.add_argument("--arm-cam-url", default="")
     parser.add_argument("--arm-cam-index", type=int, default=-1)
     parser.add_argument("--arm-cam-fov", type=float, default=60.0)
+    parser.add_argument("--cam-width", type=int, default=1280)
+    parser.add_argument("--cam-height", type=int, default=720)
     parser.add_argument("--arm-cam-width", type=int, default=640)
     parser.add_argument("--arm-cam-height", type=int, default=480)
     parser.add_argument("--classify-every", type=int, default=10)
@@ -65,14 +67,14 @@ def main():
             approach_inset=args.approach_inset,
         )
         print(f"Gripper: motor ID {args.gripper_id}, open={args.gripper_open} close={args.gripper_close} "
-              f"kp={args.gripper_kp} settle={args.settle_time}s inset={args.approach_inset}m")
+              f"grip={args.gripper_grip} kp={args.gripper_kp} settle={args.settle_time}s inset={args.approach_inset}m")
 
     arm = VectorBH6ArmDriver(gripper=gripper_cfg) if not args.no_arm else None
 
     if args.phone_url:
         camera = PhoneCamera(stream_url=args.phone_url)
     else:
-        camera = USBCamera(index=args.camera)
+        camera = USBCamera(index=args.camera, width=args.cam_width, height=args.cam_height)
 
     arm_camera = None
     if args.arm_cam_url:

@@ -61,7 +61,7 @@ class StratusPipeline:
         display = frame.image.copy()
         self._last_h, self._last_w = display.shape[:2]
         self._draw_workspace(display)
-        if self._arm_camera is not None and self._update_preview_counter % 5 == 0:
+        if self._arm_camera is not None:
             self._last_arm_frame = self._arm_camera.read()
         self._show_both(display, self._last_arm_frame)
         cv2.waitKey(1)
@@ -71,6 +71,10 @@ class StratusPipeline:
             return
         h, w = self._last_h, self._last_w
         if h == 0 or w == 0:
+            return
+        # Check if click is in workspace portion (left side of combined window)
+        # Combined window has workspace (width w) + arm_cam (width h) = total width w + h
+        if x >= w:  # Click in arm camera portion
             return
         self._selected_idx = -1
         for i, obj in enumerate(self._current_objects):
@@ -86,16 +90,43 @@ class StratusPipeline:
     def _draw_boxes(self, display: np.ndarray, objects: list[DetectedObject],
                     highlight: int = -1) -> None:
         h, w = display.shape[:2]
+        # Class-specific colors (HSV -> BGR for variety)
+        class_colors = {
+            "cup, coffee cup, mug, glass": (0, 200, 255),   # orange
+            "bottle, water bottle": (0, 150, 255),          # orange-red
+            "book": (255, 100, 0),                          # blue
+            "cell phone": (0, 255, 200),                    # cyan
+            "phone": (0, 255, 200),
+            "laptop": (255, 0, 150),                        # magenta
+            "mouse, computer mouse": (100, 255, 100),       # green
+            "keyboard": (200, 200, 0),                      # teal
+            "remote": (150, 0, 255),                        # purple
+            "scissors": (255, 150, 0),                      # light blue
+            "pen": (0, 255, 100),                           # spring green
+            "pencil": (0, 255, 100),
+            "marker": (0, 100, 255),                        # orange
+            "bottle": (0, 150, 255),
+            "watch": (255, 200, 0),                         # cyan
+            "cup": (0, 200, 255),
+        }
+        default_color = GREEN
+
         for i, obj in enumerate(objects):
             x1 = int(obj.left * w)
             y1 = int(obj.top * h)
             x2 = int((obj.left + obj.width) * w)
             y2 = int((obj.top + obj.height) * h)
-            color = (0, 255, 255) if i == highlight else GREEN
+
+            color = class_colors.get(obj.name.lower(), default_color)
+            if i == highlight:
+                color = (0, 255, 255)  # yellow highlight
             cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
             if i == highlight:
                 cv2.putText(display, f"[{i}] {obj.name}", (x1, y1 - 6),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            else:
+                cv2.putText(display, f"{obj.name} {obj.confidence:.2f}", (x1, y1 - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
     def _draw_workspace(self, display: np.ndarray) -> None:
         h, w = display.shape[:2]
@@ -337,6 +368,9 @@ class StratusPipeline:
 
             if self._show_preview:
                 self._draw_workspace(display)
+                # Always read arm camera every frame for smooth preview
+                if self._arm_camera is not None:
+                    self._last_arm_frame = self._arm_camera.read()
                 if cmd:
                     self._draw_boxes(display, cmd.detected_objects)
                     if cmd.detected_labels:
@@ -346,10 +380,10 @@ class StratusPipeline:
                     else:
                         self._bottom_bar(display, "scanning...", GRAY)
                 else:
+                    # Persist last detection boxes between classifications
+                    if self._current_objects:
+                        self._draw_boxes(display, self._current_objects)
                     self._bottom_bar(display, "scanning...", GRAY)
-                self._arm_frame_counter += 1
-                if self._arm_camera is not None and self._arm_frame_counter % 10 == 0:
-                    self._last_arm_frame = self._arm_camera.read()
                 self._show_both(display, self._last_arm_frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     raise KeyboardInterrupt()

@@ -36,6 +36,8 @@ class WorkspaceCalibrationData:
     points: List[Dict[str, float]] = None
     timestamp: float = 0.0
     notes: str = ""
+    # Backward compatibility for old calibration files
+    type: str = "homography"
 
     def __post_init__(self):
         if self.camera_matrix is None:

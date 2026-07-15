@@ -10,11 +10,14 @@ from ultralytics import YOLO
 
 logger = logging.getLogger(__name__)
 
-CLASSES = ["marker", "cup", "pen", "pencil", "cell phone", "phone",
-           "bottle", "remote", "keyboard", "mouse", "scissors",
-           "book", "laptop", "watch", "coin", "card", "cable",
-           "charger", "adapter", "battery", "toy", "eraser",
-           "stapler", "tape", "glue", "ruler", "clip"]
+CLASSES = [
+    "marker", "cup, coffee cup, mug, glass", "pen", "pencil",
+    "cell phone", "phone", "bottle, water bottle", "remote",
+    "keyboard", "mouse, computer mouse", "scissors",
+    "book", "laptop", "watch", "coin", "card", "cable",
+    "charger", "adapter", "battery", "toy", "eraser",
+    "stapler", "tape", "glue", "ruler", "clip",
+]
 
 DROP_JOINTS = {
     "A": [45, -30, 30, 0, 0, 0],
@@ -25,7 +28,7 @@ DROP_JOINTS = {
 
 class YOLOClassifier:
     def __init__(self, model_path: str = "models/yolov8s-world.pt",
-                 conf_threshold: float = 0.1,
+                 conf_threshold: float = 0.05,
                  map_offset_x: float = 0.15, map_scale_x: float = 0.50,
                  map_offset_y: float = -0.20, map_scale_y: float = 0.40,
                  pickup_z: float = 0.15, pitch: float = 0.2):

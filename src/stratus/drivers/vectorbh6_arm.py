@@ -2,6 +2,7 @@ from __future__ import annotations
 import sys
 import time
 import logging
+import cv2
 from pathlib import Path
 from dataclasses import dataclass
 import numpy as np
@@ -250,7 +251,9 @@ class VectorBH6ArmDriver:
             q = q_start + alpha * (target - q_start)
             self._arm.mit(pos=q, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
             time.sleep(dt)
+            cv2.waitKey(1)
         self._arm.mit(pos=target, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
+        cv2.waitKey(1)
 
     def execute_triage(self, command: TriageCommand) -> bool:
         if not command.pickup_pose:

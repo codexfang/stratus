@@ -45,6 +45,8 @@ class StratusPipeline:
         self._bg_frame = None
         self._current_objects: list[DetectedObject] = []
         self._selected_idx: int = 0
+        self._last_arm_frame = None
+        self._arm_frame_counter = 0
         cv2.namedWindow("Stratus")
         cv2.setMouseCallback("Stratus", self._on_mouse)
 
@@ -268,7 +270,9 @@ class StratusPipeline:
             self._draw_boxes(display, cmd.detected_objects, highlight=idx)
             bin_name = BIN_NAMES.get(cmd.target_bin, cmd.target_bin)
             self._bottom_bar(display, f"[{idx}] {name}  ->  {bin_name}", GREEN)
-            self._show_both(display)
+            if self._arm_camera is not None and self._arm_frame_counter % 10 == 0:
+                self._last_arm_frame = self._arm_camera.read()
+            self._show_both(display, self._last_arm_frame)
             key = cv2.waitKey(50) & 0xFF
             if key == ord('y'):
                 cx = (obj.left + obj.width / 2)
@@ -310,7 +314,7 @@ class StratusPipeline:
                 display = frame.image.copy()
                 self._draw_workspace(display)
                 self._bottom_bar(display, f"Clear workspace... {i}", (0, 255, 255))
-                self._show_both(display)
+                self._show_both(display, self._last_arm_frame)
                 cv2.waitKey(1)
                 time.sleep(0.05)
             cv2.waitKey(500)
@@ -344,7 +348,10 @@ class StratusPipeline:
                         self._bottom_bar(display, "scanning...", GRAY)
                 else:
                     self._bottom_bar(display, "scanning...", GRAY)
-                self._show_both(display)
+                self._arm_frame_counter += 1
+                if self._arm_camera is not None and self._arm_frame_counter % 10 == 0:
+                    self._last_arm_frame = self._arm_camera.read()
+                self._show_both(display, self._last_arm_frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     raise KeyboardInterrupt()
 

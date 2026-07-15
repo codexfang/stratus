@@ -169,11 +169,18 @@ class StratusPipeline:
         hfov_rad = np.deg2rad(self._arm_cam_fov)
 
         for iteration in range(3):
-            frame = self._arm_camera.read()
+            for retry in range(3):
+                frame = self._arm_camera.read()
+                if frame is not None:
+                    break
+                logger.warning("[arm-servo] arm cam read failed (retry %d)", retry)
+                cv2.waitKey(100)
             if frame is None:
-                break
+                logger.error("[arm-servo] arm cam not streaming — falling back to fixed cam")
+                return
 
             refined = self._classifier.classify(frame)
+            cv2.waitKey(1)
             best = None
             for obj in refined.detected_objects:
                 if obj.name == target_name:
@@ -204,12 +211,14 @@ class StratusPipeline:
             obj_h_m = best.height * scale_y
             pu["inset"] = min(max(obj_w_m * 0.4, 0.01), 0.08)
             logger.info("[arm-servo] iter=%d obj=(%.3f,%.3f) offset=(%.3f,%.3f) corr=(%.3f,%.3f) "
-                        "h=%.3f size=(%.3f,%.3f)m inset=%.3f",
-                        iteration, ox, oy, dx_px, dy_px, dx, dy, cam_h, obj_w_m, obj_h_m, pu["inset"])
+                        "h=%.3f cam=%dx%d size=(%.3f,%.3f)m inset=%.3f",
+                        iteration, ox, oy, dx_px, dy_px, dx, dy, cam_h,
+                        iw, ih, obj_w_m, obj_h_m, pu["inset"])
 
             pu["x"] += dx
             pu["y"] += dy
             self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=2.0)
+            cv2.waitKey(1)
 
     def _visual_servo(self, cmd: TriageCommand) -> None:
         """Two-stage visual servoing:

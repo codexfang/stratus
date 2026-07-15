@@ -44,6 +44,8 @@ def main():
     parser.add_argument("--arm-cam-url", default="")
     parser.add_argument("--arm-cam-index", type=int, default=-1)
     parser.add_argument("--arm-cam-fov", type=float, default=60.0)
+    parser.add_argument("--arm-cam-width", type=int, default=640)
+    parser.add_argument("--arm-cam-height", type=int, default=480)
     args = parser.parse_args()
 
     print("=== Stratus Pipeline ===")
@@ -74,8 +76,9 @@ def main():
         arm_camera = PhoneCamera(stream_url=args.arm_cam_url)
         print(f"Arm camera: WiFi stream {args.arm_cam_url}")
     elif args.arm_cam_index >= 0:
-        arm_camera = USBCamera(index=args.arm_cam_index)
-        print(f"Arm camera: USB index {args.arm_cam_index}")
+        arm_camera = USBCamera(index=args.arm_cam_index,
+                               width=args.arm_cam_width, height=args.arm_cam_height)
+        print(f"Arm camera: USB index {args.arm_cam_index} ({args.arm_cam_width}x{args.arm_cam_height})")
 
     classifier = DummyClassifier()
     telemetry = LocalTelemetry(log_path=Path.home() / "stratus/data/logs/telemetry.jsonl")

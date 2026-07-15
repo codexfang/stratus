@@ -247,11 +247,12 @@ class StratusPipeline:
         return True
 
     def _micro_adjust(self, cmd: TriageCommand) -> None:
-        """Open gripper at approach height, read arm camera for visual confirmation
-        (no XY correction — arm cam is on tripod, different frame)."""
+        """Visual servoing using arm camera (eye-in-hand).
+        Move to approach height, detect object in arm camera, center it, then descend."""
         if not self._arm or not cmd.pickup_pose:
             return
         if self._arm_camera is None or not self._arm_camera.is_connected:
+            logger.warning("[micro] arm camera not available")
             return
         pu = cmd.pickup_pose
         pitch = pu.get("pitch", 0)
@@ -261,17 +262,83 @@ class StratusPipeline:
 
         self._arm.gripper_open()
         cmd.gripper_open_done = True
+        
+        # Move to approach height above pickup position
         ok = self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch, duration=4.0,
                                     frame_cb=self._update_preview)
         if not ok:
             logger.warning("[micro] approach_z IK failed (%.3f, %.3f) — unreachable", pu["x"], pu["y"])
             return
 
-        frame = self._arm_camera.read()
-        if frame is not None:
-            self._classifier.classify(frame)
+        # Visual servoing loop: center object in arm camera
+        max_iters = 5
+        for i in range(max_iters):
+            frame = self._arm_camera.read()
+            if frame is None:
+                logger.warning("[micro] arm cam read failed")
+                break
+            
+            result = self._classifier.classify(frame)
             self._update_preview()
-            logger.info("[micro] arm cam view at approach_z — using workspace position")
+            
+            # Find target object in arm camera
+            best = None
+            for obj in result.detected_objects:
+                if obj.name == target_name:
+                    best = obj
+                    break
+            if best is None and result.detected_objects:
+                # Fallback: closest to center
+                best = min(result.detected_objects,
+                           key=lambda o: abs(o.left + o.width/2 - 0.5) + abs(o.top + o.height/2 - 0.5))
+            
+            if best is None:
+                logger.warning("[micro] target '%s' not found in arm cam", target_name)
+                break
+            
+            # Compute offset from image center
+            cx = best.left + best.width / 2
+            cy = best.top + best.height / 2
+            dx_px = (cx - 0.5)
+            dy_px = (cy - 0.5)
+            
+            # If well centered, break
+            if abs(dx_px) < 0.02 and abs(dy_px) < 0.02:
+                logger.info("[micro] centered in arm cam (dx=%.3f, dy=%.3f)", dx_px, dy_px)
+                break
+            
+            # Convert pixel offset to world offset at current height
+            # Arm camera is at approach_z, object at pz
+            cam_height = approach_z - pz
+            if cam_height < 0.02:
+                cam_height = 0.15
+            
+            # Estimate FOV (arm camera 60 deg horizontal)
+            hfov = np.deg2rad(60.0)
+            fh, fw = frame.image.shape[:2]
+            vfov = hfov * fh / fw
+            scale_x = cam_height * 2 * np.tan(hfov / 2)
+            scale_y = cam_height * 2 * np.tan(vfov / 2)
+            
+            dx = dx_px * scale_x
+            dy = dy_px * scale_y
+            
+            # Apply correction in camera frame (approximate)
+            # Camera X = arm -X, Camera Y = arm -Y (approximate)
+            pu["x"] -= dy
+            pu["y"] -= dx
+            
+            logger.info("[micro] iter %d: pixel_offset=(%.3f,%.3f) world_corr=(%.3f,%.3f) new_pos=(%.3f,%.3f)",
+                        i, dx_px, dy_px, -dy, -dx, pu["x"], pu["y"])
+            
+            # Move to corrected position
+            ok = self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch, duration=2.0,
+                                        frame_cb=self._update_preview)
+            if not ok:
+                logger.warning("[micro] correction IK failed")
+                break
+        
+        logger.info("[micro] visual servoing complete at (%.3f, %.3f)", pu["x"], pu["y"])
 
     def _exec_and_telemetry(self, cmd: TriageCommand) -> None:
         if self._arm:

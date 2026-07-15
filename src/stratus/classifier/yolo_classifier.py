@@ -66,11 +66,16 @@ class YOLOClassifier:
             # Support both "matrix" and "homography" keys for backward compat
             H = np.array(cal.get("matrix") or cal.get("homography", []), dtype=np.float32)
             if H.shape == (3, 3):
-                self._homography = H
-                self._use_calibration = True
-                logger.info("Loaded workspace calibration from %s (type=%s, err=%.1fmm)",
-                            CALIBRATION_PATH, cal.get("type", "homography"),
-                            cal.get("mean_error_mm", 0))
+                # Only use homography if calibration error is reasonable (< 20mm)
+                mean_err = cal.get("mean_error_mm", 999)
+                if mean_err < 20:
+                    self._homography = H
+                    self._use_calibration = True
+                    logger.info("Loaded workspace calibration from %s (type=%s, err=%.1fmm)",
+                                CALIBRATION_PATH, cal.get("type", "homography"),
+                                cal.get("mean_error_mm", 0))
+                else:
+                    logger.warning("Calibration error %.1fmm too high, ignoring homography", mean_err)
             else:
                 logger.warning("Calibration matrix invalid shape: %s", H.shape)
         except Exception as e:

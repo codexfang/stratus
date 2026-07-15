@@ -80,6 +80,8 @@ class WorkspaceCalibration:
             data['homography'] = data.pop('matrix')
         if 'type' in data:
             data['type'] = data.get('type', 'homography')
+        # Remove unexpected fields
+        data.pop('camera', None)
         if 'camera_matrix' not in data and 'homography' in data:
             # If no camera_matrix but have homography, use identity
             data['camera_matrix'] = np.eye(3).tolist()

@@ -87,7 +87,7 @@ class StratusPipeline:
                 logger.info("Selected object %d: %s", i, obj.name)
                 break
 
-def _draw_boxes(self, display: np.ndarray, objects: list[DetectedObject],
+    def _draw_boxes(self, display: np.ndarray, objects: list[DetectedObject],
                     highlight: int = -1) -> None:
         """Draw thin bounding box outlines with class labels and confidence.
         Click inside a box to select it for picking."""

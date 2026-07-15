@@ -142,6 +142,21 @@ class VectorBH6ArmDriver:
                       kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
         if self._gripper_hold_target is not None and self._gripper_motor is not None:
             try:
+                for _ in range(2):
+                    self._gripper_motor.request_feedback()
+                    time.sleep(0.02)
+                    if ctrl:
+                        ctrl.poll_feedback_once()
+                st = self._gripper_motor.get_state()
+                if st is not None and st.status_code not in (0, 1):
+                    logger.warning("[gripper] loop status=%d, recovering", st.status_code)
+                    self._gripper_motor.clear_error()
+                    time.sleep(0.15)
+                    self._gripper_motor.enable()
+                    time.sleep(0.3)
+                    from motorbridge import Mode
+                    self._gripper_motor.ensure_mode(Mode.MIT, 1000)
+                    time.sleep(0.3)
                 self._gripper_motor.send_mit(self._gripper_hold_target, 0.0,
                                               self._gripper_cfg.mit_kp,
                                               self._gripper_cfg.mit_kd, 0.0)
@@ -380,27 +395,28 @@ class VectorBH6ArmDriver:
                 logger.warning("descend failed")
                 return False
 
-        logger.info("[triage] move in forward (%.3f m)", inset)
-        self.move_to_pose(x=px + inset, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
-                          duration=1.5, frame_cb=frame_cb)
+        logger.info("[triage] descend to pickup (z=%.3f)", pz)
+        if not self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
+                                 duration=3.0, frame_cb=frame_cb):
+            logger.warning("descend failed")
+            return False
 
         logger.info("[triage] grip object")
         if frame_cb:
             frame_cb()
         if not self.gripper_grip():
-            logger.warning("[triage] first grip missed, re-approach with larger inset")
-            self.move_to_pose(x=px + inset, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
+            logger.warning("[triage] first grip missed, re-approach")
+            self.move_to_pose(x=px, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
                               duration=2.0, frame_cb=frame_cb)
             self.gripper_open()
             command.gripper_open_done = True
-            inset = min(inset + 0.01, 0.10)
-            self.move_to_pose(x=px + inset, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
+            self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
                               duration=2.0, frame_cb=frame_cb)
             if not self.gripper_grip():
                 logger.warning("[triage] second grip also missed")
 
         logger.info("[triage] lift (z=%.3f)", pre_z)
-        self.move_to_pose(x=px + inset, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
+        self.move_to_pose(x=px, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
                           duration=3.0, frame_cb=frame_cb)
 
         if command.drop_joints is not None:

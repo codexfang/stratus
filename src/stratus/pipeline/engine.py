@@ -209,7 +209,7 @@ class StratusPipeline:
         pu = cmd.pickup_pose
         pitch = pu.get("pitch", 0)
         pz = pu.get("z", 0.15)
-        approach_z = pz + 0.10
+        approach_z = pz + 0.15
         target_name = cmd.detected_labels[0] if cmd.detected_labels else ""
 
         self._arm.gripper_open()

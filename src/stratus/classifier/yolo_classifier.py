@@ -25,6 +25,8 @@ DROP_JOINTS = {
     "C": [10, -10, 70, 0, 10, 0],
 }
 
+CALIBRATION_PATH = Path.home() / "stratus/calibration/workspace_cal.json"
+
 
 class YOLOClassifier:
     def __init__(self, model_path: str = "models/yolov8s-world.pt",
@@ -45,7 +47,33 @@ class YOLOClassifier:
         self._pickup_z = pickup_z
         self._pitch = pitch
         self._bg_captured = False
+
+        # Load calibration if available
+        self._homography = None
+        self._use_calibration = False
+        self._load_calibration()
+
         logger.info("YOLO-World loaded (%d custom classes)", len(CLASSES))
+
+    def _load_calibration(self) -> None:
+        if not CALIBRATION_PATH.exists():
+            logger.info("No calibration file at %s, using linear map", CALIBRATION_PATH)
+            return
+        try:
+            import json
+            with open(CALIBRATION_PATH) as f:
+                cal = json.load(f)
+            H = np.array(cal.get("matrix", []), dtype=np.float32)
+            if H.shape == (3, 3):
+                self._homography = H
+                self._use_calibration = True
+                logger.info("Loaded workspace calibration from %s (type=%s, err=%.1fmm)",
+                            CALIBRATION_PATH, cal.get("type", "homography"),
+                            cal.get("mean_error_mm", 0))
+            else:
+                logger.warning("Calibration matrix invalid shape: %s", H.shape)
+        except Exception as e:
+            logger.warning("Failed to load calibration: %s", e)
 
     def set_background(self, frame: CameraFrame) -> None:
         self._bg_captured = True
@@ -94,8 +122,18 @@ class YOLOClassifier:
         obj = objects[0]
         cx = (obj.left + obj.width / 2)
         cy = (obj.top + obj.height / 2)
-        map_x = self._map_offset_x + cx * self._map_scale_x
-        map_y = self._map_offset_y + cy * self._map_scale_y
+
+        # Use calibration homography if available, else linear map
+        if self._use_calibration and self._homography is not None:
+            H_inv = np.linalg.inv(self._homography)
+            pt = np.array([cx * w, cy * h, 1.0], dtype=np.float32)
+            proj = H_inv @ pt
+            map_x, map_y = proj[0] / proj[2], proj[1] / proj[2]
+            logger.info(f"Calibrated pick: ({map_x:.3f}, {map_y:.3f}) from pixel ({cx*w:.1f},{cy*h:.1f})")
+        else:
+            map_x = self._map_offset_x + cx * self._map_scale_x
+            map_y = self._map_offset_y + cy * self._map_scale_y
+            logger.info(f"Linear map pick: ({map_x:.3f}, {map_y:.3f}) from pixel ({cx*w:.1f},{cy*h:.1f})")
 
         logger.info(f"Pick {top[0]} at ({map_x:.3f}, {map_y:.3f}) -> bin_{target.lower()}")
 

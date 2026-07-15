@@ -87,29 +87,29 @@ class StratusPipeline:
                 logger.info("Selected object %d: %s", i, obj.name)
                 break
 
-    def _draw_boxes(self, display: np.ndarray, objects: list[DetectedObject],
+def _draw_boxes(self, display: np.ndarray, objects: list[DetectedObject],
                     highlight: int = -1) -> None:
+        """Draw thin bounding box outlines with class labels and confidence.
+        Click inside a box to select it for picking."""
         h, w = display.shape[:2]
-        # Class-specific colors (HSV -> BGR for variety)
         class_colors = {
-            "cup, coffee cup, mug, glass": (0, 200, 255),   # orange
-            "bottle, water bottle": (0, 150, 255),          # orange-red
-            "book": (255, 100, 0),                          # blue
-            "cell phone": (0, 255, 200),                    # cyan
-            "phone": (0, 255, 200),
-            "laptop": (255, 0, 150),                        # magenta
-            "mouse, computer mouse": (100, 255, 100),       # green
-            "keyboard": (200, 200, 0),                      # teal
-            "remote": (150, 0, 255),                        # purple
-            "scissors": (255, 150, 0),                      # light blue
-            "pen": (0, 255, 100),                           # spring green
-            "pencil": (0, 255, 100),
-            "marker": (0, 100, 255),                        # orange
-            "bottle": (0, 150, 255),
-            "watch": (255, 200, 0),                         # cyan
-            "cup": (0, 200, 255),
+            "cup, coffee cup, mug, glass": (0, 140, 255),   # orange
+            "book": (255, 100, 0),                           # blue
+            "phone": (255, 255, 0),                          # cyan
+            "cell phone": (255, 255, 0),
+            "laptop": (255, 0, 255),                         # magenta
+            "mouse, computer mouse": (0, 255, 100),          # green
+            "keyboard": (255, 200, 0),                       # teal
+            "remote": (200, 0, 200),                         # purple
+            "scissors": (255, 150, 0),                       # light blue
+            "pen": (0, 255, 150),                            # spring green
+            "pencil": (0, 255, 150),
+            "bottle, water bottle": (0, 100, 255),           # orange-red
+            "watch": (255, 200, 0),                          # teal
+            "cup": (0, 140, 255),
+            "marker": (100, 100, 255),                       # light blue
         }
-        default_color = GREEN
+        default_color = (0, 255, 0)  # green
 
         for i, obj in enumerate(objects):
             x1 = int(obj.left * w)
@@ -120,13 +120,23 @@ class StratusPipeline:
             color = class_colors.get(obj.name.lower(), default_color)
             if i == highlight:
                 color = (0, 255, 255)  # yellow highlight
-            cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
-            if i == highlight:
-                cv2.putText(display, f"[{i}] {obj.name}", (x1, y1 - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                thickness = 3
             else:
-                cv2.putText(display, f"{obj.name} {obj.confidence:.2f}", (x1, y1 - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                thickness = 2
+
+            # Thin rectangular outline (no fill)
+            cv2.rectangle(display, (x1, y1), (x2, y2), color, thickness)
+
+            # Label with confidence
+            label = f"{obj.name} {obj.confidence:.2f}"
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            cv2.rectangle(display, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
+            cv2.putText(display, label, (x1 + 2, y1 - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
+            if i == highlight:
+                cv2.putText(display, f"[{i}] SELECTED", (x1, y2 + 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
     def _draw_workspace(self, display: np.ndarray) -> None:
         h, w = display.shape[:2]

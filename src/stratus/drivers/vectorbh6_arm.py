@@ -24,6 +24,7 @@ class GripperConfig:
     model: str = "4310"
     open_pos: float = 2.0
     close_pos: float = -5.0
+    grip_pos: float = -3.0
     mit_kp: float = 10.0
     mit_kd: float = 1.0
     settle_time: float = 4.0
@@ -199,8 +200,26 @@ class VectorBH6ArmDriver:
         if self._gripper_motor is None:
             logger.info("[gripper] no motor")
             return
-        self._gripper_cmd(self._gripper_cfg.close_pos)
-        logger.info("[gripper] grip -> %.2f", self._gripper_cfg.close_pos)
+        from motorbridge import Mode
+        for attempt in range(2):
+            self._gripper_cmd(self._gripper_cfg.grip_pos)
+            st = self._gripper_motor.get_state()
+            if st is not None and st.status_code == 1:
+                logger.info("[gripper] grip -> %.2f (ok)", self._gripper_cfg.grip_pos)
+                return
+            logger.warning("[gripper] grip attempt %d got status=%d, recovering", attempt, st.status_code if st else -1)
+            self._gripper_motor.clear_error()
+            time.sleep(0.3)
+            self._gripper_motor.enable()
+            time.sleep(0.3)
+            self._gripper_motor.ensure_mode(Mode.MIT, 1000)
+            time.sleep(0.5)
+            half = self._gripper_cfg.grip_pos * 0.5
+            self._gripper_motor.send_mit(half, 0.0, self._gripper_cfg.mit_kp,
+                                        self._gripper_cfg.mit_kd, 0.0)
+            time.sleep(2.0)
+        self._gripper_cmd(self._gripper_cfg.grip_pos)
+        logger.info("[gripper] grip -> %.2f", self._gripper_cfg.grip_pos)
 
     def get_observation(self) -> ArmObservation:
         pos, vel, torq = self._arm.get_state()
@@ -334,11 +353,29 @@ class VectorBH6ArmDriver:
     def _safe_return_home(self, frame_cb: callable = None) -> None:
         home_poses = [(0, 0, 0.25), (0.10, 0, 0.25), (0, 0.10, 0.25),
                       (0.10, 0.10, 0.30)]
+        reached_cart = False
         for px, py, pz in home_poses:
             if self.move_to_pose(x=px, y=py, z=pz, pitch=0, duration=5.0,
                                  frame_cb=frame_cb):
                 logger.info("[triage] returned to (%.2f, %.2f, %.2f)", px, py, pz)
+                reached_cart = True
                 break
+        if not reached_cart:
+            logger.info("[triage] Cartesian home failed, joint-space intermediate approach")
+            q, _, _ = self._arm.get_state()
+            mid = q * 0.5
+            self._arm.stop_control_loop()
+            self._slew_mit(mid, duration=4.0, frame_cb=frame_cb)
+            self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
+            time.sleep(0.3)
+            if frame_cb:
+                frame_cb()
+            for px, py, pz in home_poses:
+                if self.move_to_pose(x=px, y=py, z=pz, pitch=0, duration=5.0,
+                                     frame_cb=frame_cb):
+                    logger.info("[triage] returned to (%.2f, %.2f, %.2f) after mid-slew", px, py, pz)
+                    reached_cart = True
+                    break
         time.sleep(0.5)
         if frame_cb:
             frame_cb()

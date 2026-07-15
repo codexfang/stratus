@@ -30,22 +30,16 @@ def main():
     parser.add_argument("--gripper-id", type=int, default=0)
     parser.add_argument("--gripper-open", type=float, default=2.0)
     parser.add_argument("--gripper-close", type=float, default=-5.0)
+    parser.add_argument("--gripper-grip", type=float, default=-3.0)
     parser.add_argument("--gripper-kp", type=float, default=10.0)
     parser.add_argument("--settle-time", type=float, default=4.0)
-    parser.add_argument("--model", default="")
-    parser.add_argument("--conf", type=float, default=0.05)
-    parser.add_argument("--map-offset-x", type=float, default=0.15)
-    parser.add_argument("--map-scale-x", type=float, default=0.50)
-    parser.add_argument("--map-offset-y", type=float, default=-0.20)
-    parser.add_argument("--map-scale-y", type=float, default=0.40)
-    parser.add_argument("--pickup-z", type=float, default=0.15)
-    parser.add_argument("--pitch", type=float, default=0.2)
     parser.add_argument("--approach-inset", type=float, default=0.03)
     parser.add_argument("--arm-cam-url", default="")
     parser.add_argument("--arm-cam-index", type=int, default=-1)
     parser.add_argument("--arm-cam-fov", type=float, default=60.0)
     parser.add_argument("--arm-cam-width", type=int, default=640)
     parser.add_argument("--arm-cam-height", type=int, default=480)
+    parser.add_argument("--classify-every", type=int, default=10)
     args = parser.parse_args()
 
     print("=== Stratus Pipeline ===")
@@ -57,6 +51,7 @@ def main():
             motor_id=args.gripper_id,
             open_pos=args.gripper_open,
             close_pos=args.gripper_close,
+            grip_pos=args.gripper_grip,
             mit_kp=args.gripper_kp,
             settle_time=args.settle_time,
             approach_inset=args.approach_inset,
@@ -119,7 +114,7 @@ def main():
 
     pipeline = StratusPipeline(arm=arm, camera=camera, classifier=classifier, telemetry=telemetry,
                                 arm_camera=arm_camera, arm_cam_fov=args.arm_cam_fov,
-                                classify_every=1)
+                                classify_every=args.classify_every)
 
     print("Pipeline running. Y=pick N=skip Q=quit.\n")
     try:

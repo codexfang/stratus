@@ -179,97 +179,100 @@ class StratusPipeline:
             cx, cy, _ = max(candidates, key=lambda c: c[2])
         return (cx, cy)
 
-    def _arm_camera_center(self, pu: dict, target_name: str, pre_z: float, pitch: float) -> None:
-        """Eye-in-hand servoing: center target object in arm-mounted camera frame.
-        Also computes object width for adaptive approach inset. The arm camera
-        moves with the gripper, so the object's pixel position changes as the
-        arm approaches — true closed-loop correction."""
-        hfov_rad = np.deg2rad(self._arm_cam_fov)
 
-        for iteration in range(3):
-            for retry in range(3):
-                frame = self._arm_camera.read()
-                if frame is not None:
-                    break
-                logger.warning("[arm-servo] arm cam read failed (retry %d)", retry)
-                self._update_preview()
-            if frame is None:
-                logger.error("[arm-servo] arm cam not streaming — falling back to fixed cam")
-                return
-
-            refined = self._classifier.classify(frame)
-            self._update_preview()
-            best = None
-            for obj in refined.detected_objects:
-                if obj.name == target_name:
-                    best = obj
-                    break
-            if best is None and refined.detected_objects:
-                best = min(refined.detected_objects,
-                           key=lambda o: abs(o.left + o.width / 2 - 0.5)
-                                        + abs(o.top + o.height / 2 - 0.5))
-                logger.warning("[arm-servo] target '%s' not found, using closest '%s'",
-                               target_name, best.name)
-            if best is None:
-                logger.warning("[arm-servo] no objects at all in arm cam — aborting centering")
-                break
-
-            ox = best.left + best.width / 2
-            oy = best.top + best.height / 2
-
-            dx_px = ox - 0.5
-            dy_px = oy - 0.5
-
-            cam_h = pre_z - pu["z"]
-            if cam_h <= 0.01:
-                cam_h = 0.20
-            ih, iw = frame.image.shape[:2]
-            vfov_rad = hfov_rad * ih / iw
-            scale_x = cam_h * 2 * np.tan(hfov_rad / 2)
-            scale_y = cam_h * 2 * np.tan(vfov_rad / 2)
-
-            dx = dx_px * scale_x
-            dy = dy_px * scale_y
-
-            obj_w_m = best.width * scale_x
-            obj_h_m = best.height * scale_y
-            pu["inset"] = min(max(obj_w_m * 0.4, 0.01), 0.08)
-            logger.info("[arm-servo] iter=%d obj=(%.3f,%.3f) '%s' offset=(%.3f,%.3f) corr=(%.3f,%.3f) "
-                        "h=%.3f cam=%dx%d size=(%.3f,%.3f)m inset=%.3f",
-                        iteration, ox, oy, best.name, dx_px, dy_px, dx, dy, cam_h,
-                        iw, ih, obj_w_m, obj_h_m, pu["inset"])
-
-            pu["x"] += dx
-            pu["y"] += dy
-            self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=2.0,
-                                   frame_cb=self._update_preview)
-            self._update_preview()
 
     def _visual_servo(self, cmd: TriageCommand) -> None:
-        """Two-stage visual servoing:
-           Stage 1: Fixed camera — rough estimate via initial mapping
-           Stage 2: Arm-mounted camera — closed-loop centering (sub-cm accuracy)"""
+        """Move to pre-approach height at the stationary-camera estimated position.
+        No centering loop — that happens later at close range."""
         if not self._arm or not cmd.pickup_pose:
             return
         pu = cmd.pickup_pose
         pre_z = max(pu["z"] + 0.20, 0.30)
         pitch = pu.get("pitch", 0)
-        target_name = cmd.detected_labels[0] if cmd.detected_labels else ""
 
         self._arm.move_to_pose(pu["x"], pu["y"], pre_z, pitch=pitch, duration=5.0,
                                frame_cb=self._update_preview)
-
-        if self._arm_camera is not None and self._arm_camera.is_connected:
-            logger.info("[servo] arm camera available — eye-in-hand centering")
-            self._arm_camera_center(pu, target_name, pre_z, pitch)
-        else:
-            logger.info("[servo] no arm camera — fixed-cam relative servoing")
-
         cmd.pickup_refined = True
+
+    def _micro_adjust(self, cmd: TriageCommand) -> None:
+        """After pre-approach, descend to 10 cm above object, read arm camera ONCE,
+        apply a single micro-correction, then set pickup_pose so execute_triage
+        goes straight to pickup z."""
+        if not self._arm or not cmd.pickup_pose:
+            return
+        if self._arm_camera is None or not self._arm_camera.is_connected:
+            return
+        pu = cmd.pickup_pose
+        pitch = pu.get("pitch", 0)
+        pz = pu.get("z", 0.15)
+        pre_z = max(pz + 0.20, 0.30)
+        approach_z = pz + 0.10
+
+        target_name = cmd.detected_labels[0] if cmd.detected_labels else ""
+
+        self._arm.gripper_open()
+        cmd.gripper_open_done = True
+        self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch, duration=3.0,
+                               frame_cb=self._update_preview)
+
+        frame = self._arm_camera.read()
+        if frame is None:
+            logger.warning("[micro] arm cam read failed, using rough position")
+            self._arm.move_to_pose(pu["x"], pu["y"], pz, pitch=pitch, duration=2.0,
+                                   frame_cb=self._update_preview)
+            return
+
+        refined = self._classifier.classify(frame)
+        self._update_preview()
+
+        best = None
+        for obj in refined.detected_objects:
+            if obj.name == target_name:
+                best = obj
+                break
+        if best is None and refined.detected_objects:
+            best = min(refined.detected_objects,
+                       key=lambda o: abs(o.left + o.width / 2 - 0.5)
+                                    + abs(o.top + o.height / 2 - 0.5))
+            logger.warning("[micro] target '%s' not found, using closest '%s'",
+                           target_name, best.name)
+        if best is None:
+            logger.warning("[micro] no objects in arm cam at close range, descent without correction")
+            self._arm.move_to_pose(pu["x"], pu["y"], pz, pitch=pitch, duration=2.0,
+                                   frame_cb=self._update_preview)
+            return
+
+        hfov_rad = np.deg2rad(self._arm_cam_fov)
+        ox = best.left + best.width / 2
+        oy = best.top + best.height / 2
+        dx_px = ox - 0.5
+        dy_px = oy - 0.5
+
+        cam_h = approach_z - pz
+        if cam_h <= 0.01:
+            cam_h = 0.10
+        ih, iw = frame.image.shape[:2]
+        vfov_rad = hfov_rad * ih / iw
+        scale_x = cam_h * 2 * np.tan(hfov_rad / 2)
+        scale_y = cam_h * 2 * np.tan(vfov_rad / 2)
+        dx = dx_px * scale_x
+        dy = dy_px * scale_y
+
+        obj_w_m = best.width * scale_x
+        pu["inset"] = min(max(obj_w_m * 0.4, 0.01), 0.08)
+
+        logger.info("[micro] obj=(%.3f,%.3f) px_offset=(%.3f,%.3f) corr=(%.3f,%.3f)m "
+                    "size=%.3fm inset=%.3f", ox, oy, dx_px, dy_px, dx, dy, obj_w_m, pu["inset"])
+
+        pu["x"] += dx
+        pu["y"] += dy
+        self._arm.move_to_pose(pu["x"], pu["y"], approach_z, pitch=pitch, duration=1.5,
+                               frame_cb=self._update_preview)
 
     def _exec_and_telemetry(self, cmd: TriageCommand) -> None:
         if self._arm:
             self._visual_servo(cmd)
+            self._micro_adjust(cmd)
             self._arm.execute_triage(cmd, frame_cb=self._update_preview)
         if self._telemetry:
             drop = cmd.drop_joints or cmd.drop_pose

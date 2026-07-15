@@ -306,23 +306,32 @@ class VectorBH6ArmDriver:
                                      duration=5.0, frame_cb=frame_cb):
                 logger.warning("pre-approach failed")
                 return False
+
+            logger.info("[triage] open gripper (above object)")
+            if frame_cb:
+                frame_cb()
+            self.gripper_open()
+
+            logger.info("[triage] descend to pickup (z=%.3f)", pz)
+            if not self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
+                                     duration=4.0, frame_cb=frame_cb):
+                logger.warning("descend failed")
+                return False
         else:
-            logger.info("[triage] pickup already refined by camera, skipping pre-approach")
-
-        logger.info("[triage] open gripper (above object)")
-        if frame_cb:
-            frame_cb()
-        self.gripper_open()
-
-        logger.info("[triage] descend to pickup (z=%.3f)", pz)
-        if not self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
-                                 duration=4.0, frame_cb=frame_cb):
-            logger.warning("descend failed")
-            return False
+            logger.info("[triage] refined — open gripper & descend")
+            if not command.gripper_open_done:
+                if frame_cb:
+                    frame_cb()
+                self.gripper_open()
+            logger.info("[triage] descend to pickup (z=%.3f)", pz)
+            if not self.move_to_pose(x=px, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
+                                     duration=3.0, frame_cb=frame_cb):
+                logger.warning("descend failed")
+                return False
 
         logger.info("[triage] move in forward (%.3f m)", inset)
         self.move_to_pose(x=px + inset, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
-                          duration=2.0, frame_cb=frame_cb)
+                          duration=1.5, frame_cb=frame_cb)
 
         logger.info("[triage] grip object")
         if frame_cb:

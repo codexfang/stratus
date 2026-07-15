@@ -33,6 +33,7 @@ class TriageCommand:
     detected_labels: list[str] = field(default_factory=list)
     detected_objects: list[DetectedObject] = field(default_factory=list)
     pickup_refined: bool = False
+    gripper_open_done: bool = False
 
 
 class ArmDriver(Protocol):

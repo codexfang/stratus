@@ -239,7 +239,7 @@ class StratusPipeline:
         logger.info("[servo] moving to home joint position")
         home_joints = np.zeros(6, dtype=np.float64)
         self._arm.stop_control_loop()
-        self._slew_mit(home_joints, duration=5.0, frame_cb=self._update_preview)
+        self._arm._slew_mit(home_joints, duration=5.0, frame_cb=self._update_preview)
         self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
         
         cmd.pickup_refined = True
@@ -440,7 +440,7 @@ class StratusPipeline:
             # Go to home first
             home_joints = np.zeros(6)
             self._arm.stop_control_loop()
-            self._slew_mit(np.zeros(6), duration=2.0, frame_cb=self._update_preview)
+            self._arm._slew_mit(np.zeros(6), duration=2.0, frame_cb=self._update_preview)
             
             # Simple approach: move to pickup area using joint space
             # Joint 1: base rotation (x position)
@@ -459,7 +459,7 @@ class StratusPipeline:
             
             q_target = np.array([j1, 0.5, -0.3, 0.0, 0.0, 0.0])
             self._arm.stop_control_loop()
-            self._slew_mit(q_target, duration=3.0, frame_cb=self._update_preview)
+            self._arm._slew_mit(q_target, duration=3.0, frame_cb=self._update_preview)
             self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
             
             # Check if we reached close to target

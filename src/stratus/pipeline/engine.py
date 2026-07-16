@@ -493,6 +493,7 @@ class StratusPipeline:
             if key == ord('y'):
                 cx = (obj.left + obj.width / 2)
                 cy = (obj.top + obj.height / 2)
+                h, w = display.shape[:2]
                 
                 # Don't use coordinate mapping - just use visual servoing from home
                 logger.info("[confirm] pick %s at pixel (%.1f, %.1f) - using visual servoing", 

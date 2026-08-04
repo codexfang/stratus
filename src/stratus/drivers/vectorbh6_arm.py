@@ -22,23 +22,27 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 4.0           # wide open — confirmed working range from test_gripper.py
-    close_pos: float = -5.0
-    grip_pos: float = -3.0          # close command; motor stops when object blocks it
+    open_pos: float = 4.0           # wide open — confirmed working range
+    close_pos: float = -5.0         # fully closed (used after drop to reset)
+    grip_pos: float = -2.0          # gentle hold — stops when object blocks movement
     mit_kp: float = 10.0
     mit_kd: float = 1.0
     settle_time: float = 2.0        # seconds to wait after sending gripper command
-    grip_delta_threshold: float = 0.8  # min pos delta vs target to confirm object held
+    grip_delta_threshold: float = 0.5  # min pos delta vs target to confirm object held
 
 
 # Scan pose joint angles (radians).
 # Joint layout: [base_rotation, shoulder, elbow, forearm_roll, wrist_pitch, wrist_roll]
 #
-# Goal: arm points straight up/forward so the top-mounted camera looks down
-# at the workspace in front of the base.  Keep joint[0]=0 (no side rotation),
-# raise shoulder (negative = up), extend elbow slightly forward, tilt wrist
-# (joint[4]) forward a little so camera faces down-forward.
-DEFAULT_SCAN_JOINTS = [0.0, -0.5, -0.6, 0.0, 0.3, 0.0]
+# Goal: arm points straight forward and tilts DOWN so the top-mounted camera
+# sees the table workspace directly below it.  
+# - joint[0] = 0: no base rotation (stays centered)
+# - joint[1] = -0.4: shoulder up
+# - joint[2] = -0.7: elbow extends forward
+# - joint[3] = 0: no forearm roll
+# - joint[4] = 1.0: wrist tilts DOWN strongly (camera looks at table)
+# - joint[5] = 0: no wrist roll
+DEFAULT_SCAN_JOINTS = [0.0, -0.4, -0.7, 0.0, 1.0, 0.0]
 
 
 class VectorBH6ArmDriver:
@@ -386,6 +390,9 @@ class VectorBH6ArmDriver:
             t = i / n
             alpha = (1 - np.cos(t * np.pi)) / 2
             q = q_start + alpha * (target - q_start)
+            # Enforce joint[0]=0 if target[0]=0 to prevent base rotation drift
+            if abs(target[0]) < 0.001:
+                q[0] = 0.0
             self._arm.mit(pos=q, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
             if self._gripper_hold_target is not None and self._gripper_motor is not None:
                 try:
@@ -398,7 +405,11 @@ class VectorBH6ArmDriver:
             cv2.waitKey(1)
             if frame_cb:
                 frame_cb()
-        self._arm.mit(pos=target, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
+        # Final target command with joint[0] enforcement
+        target_final = target.copy()
+        if abs(target[0]) < 0.001:
+            target_final[0] = 0.0
+        self._arm.mit(pos=target_final, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
         if self._gripper_hold_target is not None and self._gripper_motor is not None:
             try:
                 self._gripper_motor.send_mit(self._gripper_hold_target, 0.0,
@@ -531,6 +542,13 @@ class VectorBH6ArmDriver:
         logger.info("[triage] releasing into bin")
         self.gripper_open()
         time.sleep(0.4)     # let object settle before arm swings away
+
+        # Close gripper back to neutral so it's ready for next pick
+        if frame_cb:
+            frame_cb()
+        logger.info("[triage] closing gripper to neutral")
+        self.gripper_close()
+        time.sleep(0.3)
 
         # ── 9. Return home / scan pose ────────────────────────────────────
         self._safe_return_home(frame_cb)

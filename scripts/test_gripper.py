@@ -1,15 +1,21 @@
 """Standalone gripper diagnostic.
 
-Connects the arm (brings up CAN + control loop), then drives the gripper with
-continuous MIT streams so we can *watch* physically how the fingers behave.
-Use --cycles for open/grip cycling, or --ramp to sweep position slowly and map
-the mechanical range (find exactly how far "open" can go before faulting).
+Connects the arm (brings up CAN + control loop), probes the gripper motor on
+the bus, then drives it with continuous MIT streams so we can *watch* physically
+how the fingers behave.
 
-Requires the same CAN setup as run.py:
+    python scripts/test_gripper.py                       # cycles open 2.0 / grip -1.8
+    python scripts/test_gripper.py --ramp -0.5 2.5        # slow sweep to map range
+    python scripts/test_gripper.py --open 2.0 --dur 2     # longer streams
 
-    python scripts/test_gripper.py                     # cycles, open 2.5 grip -2.5
-    python scripts/test_gripper.py --ramp 0.0 3.0      # slow sweep 0 -> 3.0
-    python scripts/test_gripper.py --open 2.0 --dur 2  # slower, longer streams
+Flags:
+    --probe       read live motor status/position + damiao registers (default on)
+    --open POS    open position (default 2.0 — PROVEN to open on hardware)
+    --grip POS    grip position (default -1.8)
+    --reps N      open/grip cycles (default 3)
+    --dur S       seconds to stream each position (default 2.0)
+    --gripper-id  motor CAN id (default 7)
+    --ramp MIN MAX  slow position sweep instead of cycles
 """
 from __future__ import annotations
 
@@ -22,17 +28,57 @@ sys.path.insert(0, "src")
 from stratus.drivers.vectorbh6_arm import GripperConfig, VectorBH6ArmDriver
 
 
+def probe(handle) -> None:
+    mot = handle._gripper_motor
+    print("-- motor probe: alive? --")
+    if mot is None:
+        print("  !! no gripper motor registered")
+        return
+    for label, fn in [
+        ("enable()", lambda: mot.enable()),
+        ("get_state()", lambda: getattr(mot.get_state(), "pos", None)),
+    ]:
+        try:
+            r = fn()
+            print(f"  {label}: OK {r if label.startswith('get_state') else ''}")
+        except Exception as e:
+            print(f"  {label}: FAIL {e}")
+    # Feedback + register reads — do any of them ack?
+    try:
+        mot.request_feedback()
+        time.sleep(0.05)
+        ctrl = handle._arm._ctrl_map.get("damiao")
+        if ctrl:
+            ctrl.poll_feedback_once()
+        st = mot.get_state()
+        print(f"  feedback get_state: pos={getattr(st, 'pos', None)!r} "
+              f"status={getattr(st, 'status_code', None)!r}")
+    except Exception as e:
+        print(f"  feedback get_state: FAIL {e}")
+    for reg in (0, 2, 10, 20, 0x10000):
+        try:
+            v = mot.get_register_f32(reg, 300)
+            print(f"  get_register_f32(0x{reg:x}) = {v}")
+        except Exception as e:
+            print(f"  get_register_f32(0x{reg:x}) = FAIL ({str(e)[:60]})")
+        try:
+            v = mot.get_register_u32(reg, 300)
+            print(f"  get_register_u32(0x{reg:x}) = {v}")
+        except Exception as e:
+            print(f"  get_register_u32(0x{reg:x}) = FAIL ({str(e)[:60]})")
+    print("-- probe done --")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--open", type=float, default=2.5)
-    ap.add_argument("--grip", type=float, default=-2.5)
-    ap.add_argument("--reps", type=int, default=4)
-    ap.add_argument("--dur", type=float, default=1.5,
-                    help="seconds to stream each position (default 1.5)")
+    ap.add_argument("--open", type=float, default=2.0)
+    ap.add_argument("--grip", type=float, default=-1.8)
+    ap.add_argument("--reps", type=int, default=3)
+    ap.add_argument("--dur", type=float, default=2.0)
     ap.add_argument("--gripper-id", type=int, default=7)
-    ap.add_argument("--ramp", nargs=2, type=float, metavar=("MIN", "MAX"),
-                    help="slow position sweep from MIN to MAX instead of cycles")
-    ap.add_argument("--ramp-steps", type=int, default=80)
+    ap.add_argument("--no-probe", action="store_true")
+    ap.add_argument("--ramp", nargs=2, type=float, metavar=("MIN", "MAX"))
+    ap.add_argument("--ramp-steps", type=int, default=90)
     ap.add_argument("--ramp-dt", type=float, default=0.06)
     args = ap.parse_args()
 
@@ -50,22 +96,19 @@ def main() -> int:
         return 1
 
     try:
-        mot = handle._gripper_motor
-        if mot is None:
-            print("!! no gripper motor registered — check motor_id / CAN bus")
-            return 1
+        if not args.no_probe:
+            probe(handle)
         print(">> WATCH FINGERS during the streams <<")
 
         if args.ramp:
             lo, hi = sorted(args.ramp)
             step = (hi - lo) / args.ramp_steps
             print(f">> RAMP {lo:.2f} -> {hi:.2f} in {args.ramp_steps} steps "
-                  f"({args.ramp_dt}s each)  [current->open max]")
+                  f"({args.ramp_dt}s each)")
             for i in range(args.ramp_steps + 1):
-                p = lo + step * i
-                handle.gripper_drive(p, args.ramp_dt, poll_feedback=False)
+                handle.gripper_drive(lo + step * i, args.ramp_dt, poll_feedback=True)
             print(">> ramp done; holding at", hi)
-            handle.gripper_drive(hi, 1.0)
+            handle.gripper_drive(hi, 1.5)
         else:
             for i in range(args.reps):
                 print(f"-> cycle {i + 1}/{args.reps}: OPEN {args.open} "

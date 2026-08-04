@@ -314,8 +314,14 @@ class VectorBH6ArmDriver:
                       kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
 
     def _gripper_loop(self) -> None:
+        """Continuous MIT stream for the gripper at ~50Hz.
+
+        Pure position streaming — NO request_feedback/poll in this loop.
+        Feedback on this motor never arrives (register protocol unsupported)
+        and the extra request+read traffic starves the stream exactly when the
+        arm is slewing hard, which is when the gripper must hold position.
+        """
         cfg = self._gripper_cfg
-        ctrl = self._arm._ctrl_map.get("damiao")
         hard_error_streak = 0
         while not self._gripper_stop:
             mot = self._gripper_motor
@@ -323,6 +329,7 @@ class VectorBH6ArmDriver:
             if mot is not None and not self._gripper_limp_active and target is not None:
                 try:
                     mot.send_mit(target, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
+                    hard_error_streak = 0
                 except Exception as e:
                     if hard_error_streak >= 3:
                         try:
@@ -335,20 +342,7 @@ class VectorBH6ArmDriver:
                         hard_error_streak += 1
                     logger.warning("[gripper] loop send failed (%s) streak=%d",
                                    e, hard_error_streak)
-                # Match the working arm's frame cadence exactly: after each
-                # MIT frame request feedback then drain the bus — this is the
-                # same send_mit+request_feedback+poll sequence the arm joints
-                # use successfully.
-                try:
-                    mot.request_feedback()
-                except Exception:
-                    pass
-                try:
-                    if ctrl:
-                        ctrl.poll_feedback_once()
-                except Exception:
-                    pass
-                time.sleep(0.01)
+                time.sleep(0.02)
             elif mot is not None and self._gripper_limp_active:
                 # Zero-stiffness stream: motor stays powered but applies no
                 # torque, so the fingers can be moved freely by hand.
@@ -396,12 +390,18 @@ class VectorBH6ArmDriver:
                 logger.warning("[gripper] resend to %.1f failed: %s", pos, e2)
                 return False
 
-        # Wait for settle + poll feedback (best-effort, only for logging)
+        # Wait for settle — continuously re-send the MIT position so the
+        # motor is never left without a frame during the settle window
+        # (feedback is best-effort/logging only).
         for _ in range(int(cfg.settle_time / 0.2)):
             time.sleep(0.2)
             try:
+                self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
+            except Exception:
+                pass
+            try:
                 self._gripper_motor.request_feedback()
-                time.sleep(0.02)
+                time.sleep(0.01)
                 if ctrl:
                     ctrl.poll_feedback_once()
                 st = self._gripper_motor.get_state()
@@ -546,7 +546,10 @@ class VectorBH6ArmDriver:
         target = cfg.grip_pos
 
         self._gripper_limp_active = False
-        self._gripper_hold_target = None
+        # Keep the streaming thread on the grip target for the whole command
+        # window (never drop to idle during the settle), then correct the hold
+        # point to wherever the motor actually stopped after we poll it.
+        self._gripper_hold_target = target
         ok = self._gripper_cmd(target)
         if not ok:
             logger.warning("[gripper] grip cmd failed")

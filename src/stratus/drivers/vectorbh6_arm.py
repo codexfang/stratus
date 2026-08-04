@@ -34,16 +34,14 @@ class GripperConfig:
 # Scan pose joint angles (radians).
 # Joint layout: [base_rotation, shoulder, elbow, forearm_roll, wrist_pitch, wrist_roll]
 #
-# CRITICAL: joint[0] MUST be 0.0 (no base rotation — arm stays facing FORWARD)
-# joint[4] is wrist pitch: LARGE positive = camera points DOWN at table
-#
-# - joint[0] = 0.0: NO base rotation (arm faces STRAIGHT FORWARD)
+# CRITICAL: Testing shows joint directions may be inverted from documentation
+# - joint[0] = 0.0: base centered (MUST be zero)
 # - joint[1] = -0.3: shoulder raised
-# - joint[2] = -0.8: elbow extends forward/down
+# - joint[2] = -0.8: elbow extends forward
 # - joint[3] = 0.0: no forearm roll
-# - joint[4] = 1.4: wrist tilts STRONGLY DOWN (camera looks DOWN at table)
+# - joint[4] = -1.4: wrist pitch NEGATIVE (testing shows negative = DOWN)
 # - joint[5] = 0.0: no wrist roll
-DEFAULT_SCAN_JOINTS = [0.0, -0.3, -0.8, 0.0, 1.4, 0.0]
+DEFAULT_SCAN_JOINTS = [0.0, -0.3, -0.8, 0.0, -1.4, 0.0]
 
 
 class VectorBH6ArmDriver:
@@ -92,15 +90,21 @@ class VectorBH6ArmDriver:
         self._mit_kd = np.array([8.0, 8.0, 8.0, 2.0, 2.0, 2.0], dtype=np.float64)
         self._gripper_hold_target = None
         q_curr, _, _ = self._arm.get_state()
+        logger.info("[connect] current joints on connect: %s", np.round(q_curr, 3))
 
-        # FORCE joint[0] to exactly 0.0 if it's drifted — base MUST face forward
-        if abs(q_curr[0]) > 0.05:
-            logger.warning("[connect] joint[0] drifted to %.3f — forcing to 0.0", q_curr[0])
-            q_curr[0] = 0.0
-            self._arm.mit(pos=q_curr, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
-            time.sleep(0.5)
+        # FORCE joint[0] to exactly 0.0 — base MUST face forward, no tolerance
+        if abs(q_curr[0]) > 0.01:
+            logger.warning("[connect] joint[0] is %.3f (NOT zero) — forcing to 0.0", q_curr[0])
+            q_zero = q_curr.copy()
+            q_zero[0] = 0.0
+            # Send command 3 times to ensure it takes
+            for _ in range(3):
+                self._arm.mit(pos=q_zero, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
+                time.sleep(0.3)
             q_curr, _, _ = self._arm.get_state()
-            logger.info("[connect] joint[0] after reset: %.3f", q_curr[0])
+            logger.info("[connect] joint[0] after force-reset: %.3f", q_curr[0])
+        else:
+            logger.info("[connect] joint[0] already at zero (%.3f)", q_curr[0])
 
         self._endpos._q_target[:] = q_curr
         self._endpos._loop_cb = lambda ctrl, dt: self._arm_loop(ctrl, dt)
@@ -357,9 +361,15 @@ class VectorBH6ArmDriver:
         if scan_joints is not None:
             self.set_scan_joints(scan_joints)
         target = np.array(self._scan_joints, dtype=np.float64)
-        logger.info("[scan] moving to scan pose %s (%.1fs)", np.round(target, 3), duration)
+        logger.info("[scan] BEFORE move — current joints: %s", 
+                    np.round(self._arm.get_state()[0], 3))
+        logger.info("[scan] TARGET scan pose: %s (%.1fs)", np.round(target, 3), duration)
+        logger.info("[scan] joint[0]=%+.4f (MUST be 0 for forward), joint[4]=%+.4f (negative=DOWN)",
+                    target[0], target[4])
         self.move_to_joints(target, duration=duration, frame_cb=frame_cb)
-        logger.info("[scan] scan pose reached")
+        final_q, _, _ = self._arm.get_state()
+        logger.info("[scan] AFTER move — final joints: %s", np.round(final_q, 3))
+        logger.info("[scan] joint[0] error: %+.4f (should be ~0)", final_q[0])
 
     def move_to_pose(self, x: float, y: float, z: float,
                      roll: float = 0, pitch: float = 0, yaw: float = 0,

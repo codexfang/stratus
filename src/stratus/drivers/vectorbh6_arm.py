@@ -1,5 +1,8 @@
 from __future__ import annotations
 import sys
+import os
+import re
+import glob
 import time
 import logging
 import threading
@@ -55,12 +58,81 @@ class GripperConfig:
 #   idx5 =  0.0: NO wrist roll
 DEFAULT_SCAN_JOINTS = [0.0, -0.5, -0.5, 0.0, 0.0, 0.0]
 
+DEFAULT_ARM_YAML = str(Path.home()
+                       / "reBotArm_control_py" / "config" / "arm.yaml")
+
+
+def find_dm_serial_channels() -> list[str]:
+    """List USB-to-CAN serial ports present on this machine."""
+    found: list[str] = []
+    for pat in ("/dev/cu.usbmodem*", "/dev/tty.usbmodem*",
+                "/dev/cu.usbserial-*", "/dev/cu.usbserial*",
+                "/dev/cu.usb*", "/dev/ttyACM*"):
+        found.extend(glob.glob(pat))
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for c in found:
+        if c not in seen:
+            seen.add(c)
+            ordered.append(c)
+    return ordered
+
+
+def resolve_arm_channel(preferred: str | None) -> str | None:
+    """Pick a working serial channel for the arm.
+
+    Order: 1) STRATUS_ARM_CHANNEL env var, 2) the configured/preferred port if
+    it exists, 3) the first detected USB serial device. Returns None if none.
+    """
+    env = os.environ.get("STRATUS_ARM_CHANNEL")
+    if env and (Path(env).exists() or env.startswith("/dev/tty")):
+        return env
+    if preferred and Path(preferred).exists():
+        return preferred
+    devs = find_dm_serial_channels()
+    if devs:
+        logger.info("Detected DM serial channel -> %s (%s)",
+                    devs[0], devs)
+        return devs[0]
+    return None
+
+
+def make_arm(config_path: str | None) -> VBArm:
+    """Construct the arm, auto-resolving/overriding the serial channel so a
+    changed or missing hardcoded port never blocks startup."""
+    if config_path is not None:
+        return VBArm(config_path)
+
+    preferred = "/dev/ttyACM0"
+    try:
+        txt = Path(DEFAULT_ARM_YAML).read_text()
+        m = re.search(r'(?m)^channel:\s*(\S+)', txt)
+        if m:
+            preferred = m.group(1).strip()
+    except Exception:
+        pass
+
+    channel = resolve_arm_channel(preferred)
+    if channel is None:
+        raise RuntimeError(
+            "[arm] NO USB-to-CAN serial device found. Plug in the dongle and "
+            "re-run. Detected: none; stratus looks for /dev/cu.usbmodem*, "
+            "/dev/tty.usbmodem*, /dev/cu.usbserial*, /dev/ttyACM*.")
+    if channel != preferred:
+        patched = re.sub(r'(?m)^channel:\s*\S+', f'channel: {channel}', txt)
+        tmp = Path("/tmp/") / "stratus_arm_autodetect.yaml"
+        tmp.write_text(patched)
+        logger.info("[arm] channel %s not present — using detected %s "
+                    "(patched config %s)", preferred, channel, tmp)
+        return VBArm(str(tmp))
+    return VBArm(config_path)
+
 
 class VectorBH6ArmDriver:
     def __init__(self, config_path: str | None = None,
                  gripper: GripperConfig | None = None,
                  prime_on_connect: bool = True):
-        self._arm = VBArm(config_path)
+        self._arm = make_arm(config_path)
         self._endpos: ArmEndPos | None = None
         self._gripper_cfg = gripper if gripper is not None else GripperConfig()
         self._gripper_motor = None

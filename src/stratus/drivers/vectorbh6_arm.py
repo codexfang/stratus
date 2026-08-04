@@ -140,13 +140,21 @@ class VectorBH6ArmDriver:
         try:
             from motorbridge import Mode
             mot = ctrl.add_damiao_motor(cfg.motor_id, cfg.feedback_id, cfg.model)
+
+            # Clear any existing error first
             mot.clear_error()
-            time.sleep(0.1)
-            mot.write_register_f32(2, 150.0)
-            time.sleep(0.1)
-            mot.store_parameters()
+            time.sleep(0.2)
             mot.enable()
-            time.sleep(0.3)
+            time.sleep(0.5)
+
+            # Try to set speed limit — skip silently if CAN ack fails
+            try:
+                mot.write_register_f32(2, 150.0)
+                time.sleep(0.1)
+                mot.store_parameters()
+                time.sleep(0.1)
+            except Exception as e:
+                logger.info("Gripper speed register write skipped (%s) — continuing", e)
 
             for attempt in range(30):
                 mot.request_feedback()
@@ -156,7 +164,7 @@ class VectorBH6ArmDriver:
                 if st is not None:
                     logger.info("Gripper attempt %d: pos=%.3f status=%d t_rot=%.1f",
                                 attempt, st.pos, st.status_code, st.t_rotor)
-                    if st.status_code != 0 and st.status_code != 1:
+                    if st.status_code not in (0, 1):
                         mot.clear_error()
                         time.sleep(0.15)
                         mot.enable()
@@ -191,7 +199,13 @@ class VectorBH6ArmDriver:
                         return
                 time.sleep(0.15)
 
-            logger.warning("Gripper ID %d failed to enable after 30 attempts", cfg.motor_id)
+            # Last resort: even if status polling never confirmed, store the motor
+            # object so gripper commands can still be attempted
+            logger.warning("Gripper ID %d: 30 attempts exhausted — storing motor anyway", cfg.motor_id)
+            try:
+                mot.ensure_mode(Mode.MIT, 1000)
+            except Exception:
+                pass
             self._gripper_motor = mot
         except Exception as e:
             logger.warning("Gripper init failed: %s", e)

@@ -32,26 +32,24 @@ class GripperConfig:
 
 
 # Scan pose joint angles (radians).
-# Verified from live logs — all joints rest near zero:
-#   rest: [0.006, 0.007, -0.016, -0.018, -0.039, -0.020]
+# Verified joint mapping from live tests:
+#   idx0 = base rotation       (0.0 = straight forward — confirmed)
+#   idx1 = shoulder pitch      (negative = arm goes UP)
+#   idx2 = elbow               (positive = bends forward/down)
+#   idx3 = forearm roll        (keep 0)
+#   idx4 = unknown             (keep 0)
+#   idx5 = wrist roll          (keep 0 — 1.2 spun gripper 180°)
 #
-# Joint roles confirmed from testing:
-#   idx0 = base rotation (0 = forward — confirmed working)
-#   idx5 = WRIST ROLL — setting this to 1.2 spun gripper 180°, DO NOT USE
-#   idx4 = unknown, leave at 0 for now
+# Camera is on TOP of arm. Goal: arm extends UP so camera sees full table
+# below it, while keeping the end-effector angled down.
 #
-# To make camera look DOWN at the table the arm needs to lean FORWARD
-# and DOWN using shoulder (idx1) + elbow (idx2).
-# Camera is on TOP of the arm, so tilting the arm forward = camera faces down.
-#
-# Strategy: lean arm forward at an angle so camera points at table
-#   idx0 =  0.0: base faces FORWARD (confirmed working)
-#   idx1 = -0.5: shoulder tilts arm forward/down
-#   idx2 = +0.5: elbow bends to angle end-effector toward table
+#   idx0 =  0.0: base faces FORWARD
+#   idx1 = -0.8: shoulder raises arm UP high
+#   idx2 = +0.5: elbow bends forward so end angles DOWN toward table
 #   idx3 =  0.0: no forearm roll
-#   idx4 =  0.0: leave neutral
-#   idx5 =  0.0: NO wrist roll (setting this flipped gripper 180°)
-DEFAULT_SCAN_JOINTS = [0.0, -0.5, 0.5, 0.0, 0.0, 0.0]
+#   idx4 =  0.0: neutral
+#   idx5 =  0.0: NO wrist roll
+DEFAULT_SCAN_JOINTS = [0.0, -0.8, 0.5, 0.0, 0.0, 0.0]
 
 
 class VectorBH6ArmDriver:

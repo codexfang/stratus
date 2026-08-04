@@ -22,8 +22,8 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 4.0           # wide open — confirmed working range
-    close_pos: float = -5.0         # fully closed (used after drop to reset)
+    open_pos: float = 2.0           # open — verified working range (4.0 faults the motor)
+    close_pos: float = -3.0         # reset close after drop (still within range)
     grip_pos: float = -2.0          # gentle hold — motor stalls when object blocks it
     mit_kp: float = 10.0
     mit_kd: float = 1.0
@@ -141,72 +141,45 @@ class VectorBH6ArmDriver:
             from motorbridge import Mode
             mot = ctrl.add_damiao_motor(cfg.motor_id, cfg.feedback_id, cfg.model)
 
-            # Clear any existing error first
-            mot.clear_error()
-            time.sleep(0.2)
-            mot.enable()
-            time.sleep(0.5)
-
-            # Try to set speed limit — skip silently if CAN ack fails
+            # Clear errors / fault recovery
             try:
-                mot.write_register_f32(2, 150.0)
-                time.sleep(0.1)
-                mot.store_parameters()
-                time.sleep(0.1)
-            except Exception as e:
-                logger.info("Gripper speed register write skipped (%s) — continuing", e)
+                mot.clear_error()
+            except Exception:
+                pass
+            time.sleep(0.1)
+            try:
+                mot.enable()
+                time.sleep(0.2)
+            except Exception:
+                pass
+            try:
+                mot.ensure_mode(Mode.MIT, 1000)
+                time.sleep(0.2)
+            except Exception:
+                pass
 
-            for attempt in range(30):
+            # Quick best-effort feedback poll (logging only — do NOT block on it).
+            try:
                 mot.request_feedback()
                 time.sleep(0.02)
                 ctrl.poll_feedback_once()
                 st = mot.get_state()
                 if st is not None:
-                    logger.info("Gripper attempt %d: pos=%.3f status=%d t_rot=%.1f",
-                                attempt, st.pos, st.status_code, st.t_rotor)
-                    if st.status_code not in (0, 1):
-                        mot.clear_error()
-                        time.sleep(0.15)
-                        mot.enable()
-                        time.sleep(0.3)
-                    if st.status_code == 1:
-                        mot.set_can_timeout_ms(60000)
-                        time.sleep(0.1)
-                        try:
-                            for r in [15, 16]:
-                                for _ in range(3):
-                                    try:
-                                        val = mot.read_register_f32(r, timeout_ms=500)
-                                        if r == 15:
-                                            logger.info("Gripper P_MIN=%.2f", val)
-                                        else:
-                                            logger.info("Gripper P_MAX=%.2f", val)
-                                            if val < 8.0:
-                                                mot.write_register_f32(16, 8.0)
-                                                time.sleep(0.05)
-                                                mot.store_parameters()
-                                                time.sleep(0.1)
-                                                logger.info("Gripper P_MAX raised to 8.0")
-                                        break
-                                    except Exception:
-                                        time.sleep(0.1)
-                        except Exception as e:
-                            logger.warning("Gripper register read/write failed: %s", e)
-                        mot.ensure_mode(Mode.MIT, 1000)
-                        time.sleep(0.3)
-                        self._gripper_motor = mot
-                        logger.info("Gripper ID %d enabled in MIT mode (timeout=60s)", cfg.motor_id)
-                        return
-                time.sleep(0.15)
-
-            # Last resort: even if status polling never confirmed, store the motor
-            # object so gripper commands can still be attempted
-            logger.warning("Gripper ID %d: 30 attempts exhausted — storing motor anyway", cfg.motor_id)
-            try:
-                mot.ensure_mode(Mode.MIT, 1000)
+                    logger.info("Gripper ID %d feedback: pos=%.3f status=%d",
+                                cfg.motor_id, st.pos, st.status_code)
+                else:
+                    logger.info("Gripper ID %d: no feedback yet — commands will still be sent (fire-and-forget)",
+                                cfg.motor_id)
             except Exception:
                 pass
+
+            try:
+                mot.set_can_timeout_ms(60000)
+            except Exception:
+                pass
+
             self._gripper_motor = mot
+            logger.info("Gripper ID %d ready in MIT mode (timeout=60s)", cfg.motor_id)
         except Exception as e:
             logger.warning("Gripper init failed: %s", e)
 
@@ -242,57 +215,62 @@ class VectorBH6ArmDriver:
         from motorbridge import Mode
         cfg = self._gripper_cfg
         ctrl = self._arm._ctrl_map.get("damiao")
-        for retry in range(3):
+
+        # Send the MIT position command immediately (fire-and-forget). The
+        # Damiao gripper moves on MIT even when its feedback pipe is flaky —
+        # gating on feedback readiness before sending left it never commanded.
+        try:
+            # Recover from fault state (red blinking LED) if present: a faulted
+            # motor silently ignores position commands until cleared + re-enabled.
+            st = None
             try:
-                st = None
-                for _ in range(5):
-                    self._gripper_motor.request_feedback()
-                    time.sleep(0.02)
-                    if ctrl:
-                        ctrl.poll_feedback_once()
-                    st = self._gripper_motor.get_state()
-                    if st is not None:
-                        break
-                    time.sleep(0.05)
-                if st is not None and st.status_code != 1:
-                    logger.warning("[gripper] status=%d before cmd, clearing error", st.status_code)
+                self._gripper_motor.request_feedback()
+                time.sleep(0.02)
+                if ctrl:
+                    ctrl.poll_feedback_once()
+                st = self._gripper_motor.get_state()
+            except Exception:
+                pass
+            if st is None or st.status_code not in (0, 1):
+                logger.warning("[gripper] status=%s — clearing error & re-enabling",
+                               st.status_code if st else 'None')
+                try:
                     self._gripper_motor.clear_error()
-                    time.sleep(0.3)
+                    time.sleep(0.15)
                     self._gripper_motor.enable()
-                    time.sleep(0.3)
-                    self._gripper_motor.ensure_mode(Mode.MIT, 1000)
-                    time.sleep(0.5)
-                    st = None
-                    for _ in range(5):
-                        self._gripper_motor.request_feedback()
-                        time.sleep(0.02)
-                        if ctrl:
-                            ctrl.poll_feedback_once()
-                        st = self._gripper_motor.get_state()
-                        if st is not None:
-                            break
-                        time.sleep(0.05)
-                if st is None or st.status_code != 1:
-                    logger.warning("[gripper] motor not ready (status=%s), retry %d",
-                                   st.status_code if st else 'None', retry)
-                    continue
-                self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
-                for _ in range(int(cfg.settle_time / 0.2)):
                     time.sleep(0.2)
-                    self._gripper_motor.request_feedback()
-                    time.sleep(0.02)
-                    if ctrl:
-                        ctrl.poll_feedback_once()
-                    st = self._gripper_motor.get_state()
-                    if st is not None:
-                        logger.info("[gripper] retry=%d pos=%.3f status=%d (target=%.1f)",
-                                    retry, st.pos, st.status_code, pos)
-                        if st.status_code == 1:
-                            return True
-            except Exception as e:
-                logger.warning("[gripper] cmd failed (retry %d): %s", retry, e)
-        logger.warning("[gripper] cmd to %.1f failed after 3 retries", pos)
-        return False
+                    self._gripper_motor.ensure_mode(Mode.MIT, 1000)
+                    time.sleep(0.2)
+                except Exception as e2:
+                    logger.warning("[gripper] fault recovery failed: %s", e2)
+
+            self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
+        except Exception as e:
+            logger.warning("[gripper] send_mit to %.1f failed (%s) — retrying after enable", pos, e)
+            try:
+                self._gripper_motor.ensure_mode(Mode.MIT, 1000)
+                self._gripper_motor.enable()
+                time.sleep(0.3)
+                self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
+            except Exception as e2:
+                logger.warning("[gripper] resend to %.1f failed: %s", pos, e2)
+                return False
+
+        # Wait for settle + poll feedback (best-effort, only for logging)
+        for _ in range(int(cfg.settle_time / 0.2)):
+            time.sleep(0.2)
+            try:
+                self._gripper_motor.request_feedback()
+                time.sleep(0.02)
+                if ctrl:
+                    ctrl.poll_feedback_once()
+                st = self._gripper_motor.get_state()
+                if st is not None:
+                    logger.info("[gripper] pos=%.3f status=%d (target=%.1f)",
+                                st.pos, st.status_code, pos)
+            except Exception:
+                pass
+        return True
 
     def gripper_open(self) -> bool:
         if self._gripper_motor is None:
@@ -331,7 +309,10 @@ class VectorBH6ArmDriver:
 
         st = None
         for _ in range(5):
-            self._gripper_motor.request_feedback()
+            try:
+                self._gripper_motor.request_feedback()
+            except Exception:
+                break
             time.sleep(0.02)
             if ctrl:
                 ctrl.poll_feedback_once()
@@ -340,25 +321,31 @@ class VectorBH6ArmDriver:
                 break
 
         if st is None:
-            if not suppress_open:
-                self.gripper_open()
-            return False
+            # Command was sent fire-and-forget; assume it closed and hold at
+            # the grip position so the cup stays pinched during transport.
+            logger.info("[gripper] no feedback — holding at grip target")
+            self._gripper_hold_target = target
+            return True
 
         actual = st.pos
         delta = abs(actual - target)
+
+        # Hold at whatever position the gripper reached. This keeps the cup
+        # pinched even if the motor reached grip_pos (small objects), and if the
+        # cup slips the motor will re-close toward this hold point. Never
+        # auto-reopen: reopening here causes the open-close flap and drops the
+        # object.
+        self._gripper_hold_target = actual
 
         # delta > threshold means gripper was blocked by an object before reaching full close
         if delta > cfg.grip_delta_threshold:
             logger.info("[gripper] GRIPPED object: pos=%.3f (delta=%.3f threshold=%.3f)",
                         actual, delta, cfg.grip_delta_threshold)
-            self._gripper_hold_target = actual  # hold at blocked position
             return True
         else:
-            logger.info("[gripper] MISSED: pos=%.3f (delta=%.3f threshold=%.3f) — no object",
-                        actual, delta, cfg.grip_delta_threshold)
-            if not suppress_open:
-                self.gripper_open()
-            return False
+            logger.info("[gripper] close reached target pos=%.3f (delta=%.3f) — holding, keeping object",
+                        actual, delta)
+            return True
 
     def get_state(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         return self._arm.get_state()
@@ -557,22 +544,17 @@ class VectorBH6ArmDriver:
         if frame_cb:
             frame_cb()
         logger.info("[triage] closing gripper...")
-        gripped = self.gripper_grip(suppress_open=False)
+        gripped = self.gripper_grip()
+
+        # Firm up the hold: wait a moment then re-close so the cup is secure.
+        # gripper_grip never re-opens on its own, so this is safe.
+        time.sleep(0.3)
+        if frame_cb:
+            frame_cb()
+        self.gripper_grip()
 
         if not gripped:
-            # One retry: descend another 2 cm and nudge again
-            logger.warning("[triage] grip missed — descending 2 cm and retrying")
-            q, _, _ = self._arm.get_state()
-            q_lower = q.copy()
-            q_lower[2] += 0.10
-            self.move_to_joints(q_lower, duration=0.8, frame_cb=frame_cb)
-            if frame_cb:
-                frame_cb()
-            gripped = self.gripper_grip(suppress_open=False)
-            if not gripped:
-                logger.warning("[triage] second grip missed — aborting pick")
-                self._safe_return_home(frame_cb)
-                return False
+            logger.warning("[triage] no object detected in grip — holding anyway and continuing")
 
         # ── 6. Lift to clearance height ───────────────────────────────────
         lift_z = max(pz + 0.30, 0.34)

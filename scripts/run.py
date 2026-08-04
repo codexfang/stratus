@@ -35,10 +35,10 @@ def main():
                         help="Run without physical arm (preview only)")
     parser.add_argument("--gripper-id", type=int, default=7,
                         help="Damiao gripper motor CAN ID (default: 7)")
-    parser.add_argument("--gripper-open", type=float, default=4.0,
-                        help="Gripper open position in motor radians (default: 4.0)")
-    parser.add_argument("--gripper-close", type=float, default=-5.0,
-                        help="Gripper fully closed position (default: -5.0)")
+    parser.add_argument("--gripper-open", type=float, default=2.0,
+                        help="Gripper open position in motor radians (default: 2.0)")
+    parser.add_argument("--gripper-close", type=float, default=-3.0,
+                        help="Gripper fully closed position (default: -3.0)")
     parser.add_argument("--gripper-grip", type=float, default=-2.0,
                         help="Gripper grip target — stopped by object before this (default: -2.0)")
     parser.add_argument("--gripper-kp", type=float, default=10.0,

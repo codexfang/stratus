@@ -4,6 +4,7 @@ import os
 import re
 import glob
 import time
+import subprocess
 import logging
 import threading
 import cv2
@@ -97,6 +98,29 @@ def resolve_arm_channel(preferred: str | None) -> str | None:
     return None
 
 
+def _usb_report() -> str:
+    """Best-effort dump of what macOS believes is on the USB bus right now."""
+    lines: list[str] = []
+    try:
+        devs = find_dm_serial_channels()
+        lines.append(f"  /dev serial candidates found: {devs or 'NONE'}")
+    except Exception:
+        pass
+    try:
+        out = subprocess.run(["system_profiler", "SPUSBDataType"],
+                             capture_output=True, text=True, timeout=20)
+        txt = (out.stdout or "").strip()
+        if txt:
+            lines.append("  USB bus (system_profiler):")
+            for ln in txt.splitlines()[:20]:
+                lines.append(f"    {ln}")
+        else:
+            lines.append("  USB bus (system_profiler): (empty / no bus info)")
+    except Exception as e:
+        lines.append(f"  USB bus query failed: {e}")
+    return "\n".join(lines)
+
+
 def make_arm(config_path: str | None) -> VBArm:
     """Construct the arm, auto-resolving/overriding the serial channel so a
     changed or missing hardcoded port never blocks startup."""
@@ -116,8 +140,9 @@ def make_arm(config_path: str | None) -> VBArm:
     if channel is None:
         raise RuntimeError(
             "[arm] NO USB-to-CAN serial device found. Plug in the dongle and "
-            "re-run. Detected: none; stratus looks for /dev/cu.usbmodem*, "
-            "/dev/tty.usbmodem*, /dev/cu.usbserial*, /dev/ttyACM*.")
+            "re-run. stratus looks for /dev/cu.usbmodem*, /dev/tty.usbmodem*, "
+            "/dev/cu.usbserial*, /dev/ttyACM*.\n"
+            f"{_usb_report()}")
     if channel != preferred:
         patched = re.sub(r'(?m)^channel:\s*\S+', f'channel: {channel}', txt)
         tmp = Path("/tmp/") / "stratus_arm_autodetect.yaml"

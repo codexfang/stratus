@@ -2,6 +2,7 @@ from __future__ import annotations
 import sys
 import time
 import logging
+import threading
 import cv2
 from pathlib import Path
 from dataclasses import dataclass
@@ -25,8 +26,8 @@ class GripperConfig:
     open_pos: float = 2.5           # open — 4.0 faults the motor, 2.0 worked, 2.5 = a bit more
     close_pos: float = -3.0         # reset close after drop (still within range)
     grip_pos: float = -2.5          # gentle close — tight hold without crushing
-    mit_kp: float = 40.0
-    mit_kd: float = 2.0
+    mit_kp: float = 8.0
+    mit_kd: float = 1.0
     settle_time: float = 2.0        # seconds to wait after sending gripper command
     # ensure_mode uses the EXTENDED CAN protocol (register 10 write). This
     # gripper never acks it ("register 10 write ack not received") and the stray
@@ -62,6 +63,8 @@ class VectorBH6ArmDriver:
         self._endpos: ArmEndPos | None = None
         self._gripper_cfg = gripper if gripper is not None else GripperConfig()
         self._gripper_motor = None
+        self._gripper_thread = None
+        self._gripper_stop = True
         # Scan pose used both at startup and when returning home after a pick.
         # Set via move_to_scan_pose(scan_joints=...) before connect() if needed,
         # or override with set_scan_joints() after construction.
@@ -136,6 +139,10 @@ class VectorBH6ArmDriver:
         self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
         self._endpos._running = True
 
+        # Dedicated 50Hz gripper stream so the gripper always has continuous
+        # MIT frames regardless of what the 10Hz arm control loop is doing.
+        self._start_gripper_stream()
+
         # Prime the gripper (open->grip->open a few times) so it is definitely
         # in MIT mode and moving before the first pick.
         try:
@@ -197,31 +204,52 @@ class VectorBH6ArmDriver:
             logger.warning("Gripper init failed: %s", e)
 
     def _arm_loop(self, ctrl, dt) -> None:
+        # NOTE: the gripper is NOT driven here — a dedicated thread
+        # (self._gripper_loop) streams its MIT frames at ~50Hz so this 10Hz
+        # loop's feedback polling can never starve the gripper's continuous
+        # position stream (a single send_mit only pulses a Damiao motor).
         self._arm.mit(self._endpos._q_target,
                       kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
-        if self._gripper_hold_target is not None and self._gripper_motor is not None:
-            try:
-                for _ in range(2):
-                    self._gripper_motor.request_feedback()
-                    time.sleep(0.02)
-                    if ctrl:
-                        ctrl.poll_feedback_once()
-                st = self._gripper_motor.get_state()
-                if st is not None and st.status_code not in (0, 1):
-                    logger.warning("[gripper] loop status=%d, recovering", st.status_code)
-                    self._gripper_motor.clear_error()
-                    time.sleep(0.15)
-                    self._gripper_motor.enable()
-                    time.sleep(0.3)
-                    if self._gripper_cfg.use_ensure_mode:
-                        from motorbridge import Mode
-                        self._gripper_motor.ensure_mode(Mode.MIT, 1000)
-                    time.sleep(0.3)
-                self._gripper_motor.send_mit(self._gripper_hold_target, 0.0,
-                                              self._gripper_cfg.mit_kp,
-                                              self._gripper_cfg.mit_kd, 0.0)
-            except Exception:
-                pass
+
+    def _gripper_loop(self) -> None:
+        cfg = self._gripper_cfg
+        hard_fault_streak = 0
+        while not self._gripper_stop:
+            mot = self._gripper_motor
+            target = self._gripper_hold_target
+            if mot is not None and target is not None:
+                try:
+                    mot.send_mit(target, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
+                    hard_fault_streak = 0
+                except Exception as e:
+                    if hard_fault_streak >= 3:
+                        try:
+                            mot.enable()
+                            time.sleep(0.1)
+                            hard_fault_streak = 0
+                        except Exception:
+                            pass
+                    else:
+                        hard_fault_streak += 1
+                    logger.warning("[gripper] loop send failed (%s) streak=%d",
+                                   e, hard_fault_streak)
+                time.sleep(0.02)
+            else:
+                time.sleep(0.02)
+
+    def _start_gripper_stream(self) -> None:
+        if self._gripper_stop is False:
+            return
+        self._gripper_stop = False
+        self._gripper_thread = threading.Thread(
+            target=self._gripper_loop, daemon=True, name="gripper-stream")
+        self._gripper_thread.start()
+
+    def _stop_gripper_stream(self) -> None:
+        self._gripper_stop = True
+        if self._gripper_thread is not None:
+            self._gripper_thread.join(timeout=1.0)
+            self._gripper_thread = None
 
     def _gripper_cmd(self, pos: float) -> bool:
         if self._gripper_motor is None:
@@ -321,11 +349,12 @@ class VectorBH6ArmDriver:
 
     def gripper_drive(self, pos: float, duration: float,
                       poll_feedback: bool = True) -> None:
-        """Continuously send MIT for `duration` seconds.
+        """Command the gripper to `pos` and stream it for `duration` seconds.
 
-        A single send_mit only pulses a Damiao motor — actuation requires a
-        stream of MIT frames. This streams at ~20Hz until the time budget
-        elapses, optionally polling feedback for logging.
+        The dedicated gripper thread streams the MIT frames at ~50Hz from
+        `_gripper_hold_target`, so this just sets the target and lets it run
+        (a single send_mit only pulses a Damiao motor — actuation needs the
+        continuous stream the thread provides).
         """
         if self._gripper_motor is None:
             logger.info("[gripper] no motor — skip drive")
@@ -333,17 +362,10 @@ class VectorBH6ArmDriver:
         cfg = self._gripper_cfg
         ctrl = self._arm._ctrl_map.get("damiao")
         self._gripper_hold_target = pos
-        t0 = time.monotonic()
-        while time.monotonic() - t0 < duration:
-            try:
-                self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
-            except Exception as e:
-                logger.warning("[gripper] drive send failed (%s) — re-enabling", e)
-                try:
-                    self._gripper_motor.enable()
-                    time.sleep(0.1)
-                except Exception:
-                    pass
+        if duration <= 0:
+            return
+        t_end = time.monotonic() + duration
+        while time.monotonic() < t_end:
             if poll_feedback:
                 try:
                     self._gripper_motor.request_feedback()
@@ -356,7 +378,7 @@ class VectorBH6ArmDriver:
                                     st.pos, st.status_code, pos)
                 except Exception:
                     pass
-            time.sleep(0.03)
+            time.sleep(0.02)
 
     def gripper_open(self) -> bool:
         if self._gripper_motor is None:
@@ -722,6 +744,8 @@ class VectorBH6ArmDriver:
         self._arm.start_control_loop(callback, rate=rate)
 
     def disconnect(self) -> None:
+        self._stop_gripper_stream()
+        self._gripper_hold_target = None
         if self._endpos:
             self._endpos._running = False
         if self._arm:

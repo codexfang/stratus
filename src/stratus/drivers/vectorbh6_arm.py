@@ -32,26 +32,21 @@ class GripperConfig:
 
 
 # Scan pose joint angles (radians).
-# Verified joint mapping from live tests:
-#   idx0 = base rotation  (0.0 = straight forward — confirmed)
-#   idx1 = shoulder       (negative = arm raises UP)
-#   idx2 = elbow          (negative = arm leans forward; faults at large values)
-#   idx3 = forearm roll   (keep 0)
-#   idx4 = unknown        (keep 0)
-#   idx5 = wrist roll     (keep 0 — any nonzero value spins the gripper)
+# Verified from live test history:
+#   idx1=-1.2, idx2=-0.3 → arm folded backwards, grippers touched table (TOO FAR)
+#   idx1=-0.9, idx2=-0.6 → only shoulder moved, joint3 faulted (elbow too large)
+#   idx1=-0.5, idx2=+0.5 → camera looked DOWN, good tilt (but no fault this run)
+#   idx1=-0.5, idx2=-0.5 → arm extended UP and forward correctly
 #
-# Goal: ENTIRE arm rises straight up so camera on top sees full workspace.
-# idx1 very negative = tall vertical pose.
-# Small negative idx2 adds a slight forward lean so camera tilts down at table.
-# idx2 limited to -0.3 to avoid triggering the joint3 fault seen in testing.
-#
+# Goal: arm extends UP and forward, camera on top looks slightly down at table.
+# Keep idx2 small positive to angle end-effector down without overdriving elbow.
 #   idx0 =  0.0: base faces FORWARD
-#   idx1 = -1.2: shoulder raises arm HIGH (entire arm goes up)
-#   idx2 = -0.3: slight forward lean (camera tilts down toward table)
+#   idx1 = -0.6: shoulder raises arm up (moderate — avoids folding backwards)
+#   idx2 = +0.4: elbow angles end-effector DOWN/forward (camera looks at table)
 #   idx3 =  0.0: no forearm roll
 #   idx4 =  0.0: neutral
 #   idx5 =  0.0: NO wrist roll
-DEFAULT_SCAN_JOINTS = [0.0, -1.2, -0.3, 0.0, 0.0, 0.0]
+DEFAULT_SCAN_JOINTS = [0.0, -0.6, 0.4, 0.0, 0.0, 0.0]
 
 
 class VectorBH6ArmDriver:

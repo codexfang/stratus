@@ -32,21 +32,22 @@ class GripperConfig:
 
 
 # Scan pose joint angles (radians).
-# Verified from live test history:
-#   idx1=-1.2, idx2=-0.3 → arm folded backwards, grippers touched table (TOO FAR)
-#   idx1=-0.9, idx2=-0.6 → only shoulder moved, joint3 faulted (elbow too large)
-#   idx1=-0.5, idx2=+0.5 → camera looked DOWN, good tilt (but no fault this run)
-#   idx1=-0.5, idx2=-0.5 → arm extended UP and forward correctly
+# Physical joint limits confirmed from testing:
+#   idx2 (elbow) cannot reach +0.4 when shoulder is raised — hits mechanical limit at ~0.08
+#   idx2 negative = elbow extends arm FORWARD (away from base) — no limit issue
+#   idx1=-0.5, idx2=-0.5 confirmed working: arm extends up and forward
+#   idx1=-1.2 folds arm backwards (too far)
+#   idx1=-0.6, idx2=+0.4 → elbow only reaches 0.08, grippers droop down
 #
-# Goal: arm extends UP and forward, camera on top looks slightly down at table.
-# Keep idx2 small positive to angle end-effector down without overdriving elbow.
+# Solution: moderate shoulder raise + negative elbow to extend FORWARD
+# Camera on top of a forward-extended arm naturally looks slightly downward.
 #   idx0 =  0.0: base faces FORWARD
-#   idx1 = -0.6: shoulder raises arm up (moderate — avoids folding backwards)
-#   idx2 = +0.4: elbow angles end-effector DOWN/forward (camera looks at table)
+#   idx1 = -0.5: shoulder raises arm (moderate, won't fold backwards)
+#   idx2 = -0.5: elbow extends arm FORWARD (whole arm rises and reaches out)
 #   idx3 =  0.0: no forearm roll
 #   idx4 =  0.0: neutral
 #   idx5 =  0.0: NO wrist roll
-DEFAULT_SCAN_JOINTS = [0.0, -0.6, 0.4, 0.0, 0.0, 0.0]
+DEFAULT_SCAN_JOINTS = [0.0, -0.5, -0.5, 0.0, 0.0, 0.0]
 
 
 class VectorBH6ArmDriver:

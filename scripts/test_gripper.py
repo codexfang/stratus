@@ -4,7 +4,7 @@ Connects the arm (brings up CAN + control loop), probes the gripper motor on
 the bus, then drives it with continuous MIT streams so we can *watch* physically
 how the fingers behave.
 
-    python scripts/test_gripper.py                       # cycles open 2.0 / grip -1.8
+    python scripts/test_gripper.py                       # cycles open 2.0 / grip -0.8
     python scripts/test_gripper.py --ramp -0.5 2.5        # slow sweep to map range
     python scripts/test_gripper.py --open 2.0 --dur 2     # longer streams
 
@@ -71,8 +71,8 @@ def probe(handle) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--open", type=float, default=6.0,
-                    help="open position (default 6.0 = ~3x old 2.0)")
+    ap.add_argument("--open", type=float, default=2.0,
+                    help="open position (default 2.0 — PROVEN to open on hardware)")
     ap.add_argument("--grip", type=float, default=-0.8)
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--dur", type=float, default=2.0)

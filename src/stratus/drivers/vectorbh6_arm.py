@@ -27,11 +27,11 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 4.0           # open wide — 3x the old 2.0. Lift kp so it REACHES it
+    open_pos: float = 2.0           # PROVEN on hardware (test physically opened). Larger values (4.0/6.0) slam the stop and over-limit-FAULT the motor (silently ignores commands until power cycle)
     close_pos: float = 0.0          # neutral park after drop (safe middle, won't fault)
     grip_pos: float = -0.8          # gentle close within range (-2.5 over-limit FAULTS motor)
-    mit_kp: float = 20.0
-    mit_kd: float = 2.0
+    mit_kp: float = 8.0             # PROVEN combo with open 2.0 (vendor-tuned)
+    mit_kd: float = 1.0
     settle_time: float = 2.0        # seconds to wait after sending gripper command
     # ensure_mode uses the EXTENDED CAN protocol (register 10 write). This
     # gripper never acks it ("register 10 write ack not received") and the stray
@@ -316,12 +316,13 @@ class VectorBH6ArmDriver:
     def _gripper_loop(self) -> None:
         """Continuous MIT stream for the gripper at ~50Hz.
 
-        Pure position streaming — NO request_feedback/poll in this loop.
-        Feedback on this motor never arrives (register protocol unsupported)
-        and the extra request+read traffic starves the stream exactly when the
-        arm is slewing hard, which is when the gripper must hold position.
+        Uses the SAME proven cadence as the working arm joints / vendor
+        gripper: after every MIT frame request feedback then drain the bus.
+        This is the exact loop config that PHYSICALLY OPENED the gripper in
+        test_gripper.py, so it stays as-is.
         """
         cfg = self._gripper_cfg
+        ctrl = self._arm._ctrl_map.get("damiao")
         hard_error_streak = 0
         while not self._gripper_stop:
             mot = self._gripper_motor
@@ -342,6 +343,15 @@ class VectorBH6ArmDriver:
                         hard_error_streak += 1
                     logger.warning("[gripper] loop send failed (%s) streak=%d",
                                    e, hard_error_streak)
+                try:
+                    mot.request_feedback()
+                except Exception:
+                    pass
+                try:
+                    if ctrl:
+                        ctrl.poll_feedback_once()
+                except Exception:
+                    pass
                 time.sleep(0.02)
             elif mot is not None and self._gripper_limp_active:
                 # Zero-stiffness stream: motor stays powered but applies no
@@ -373,6 +383,19 @@ class VectorBH6ArmDriver:
             return False
         cfg = self._gripper_cfg
         ctrl = self._arm._ctrl_map.get("damiao")
+
+        # Self-healing fault recovery BEFORE every command. An over-limit fault
+        # (e.g. from a bad earlier run commanding 4.0/6.0) makes the motor
+        # silently ignore ALL MIT frames while send_mit() still returns ok.
+        # clear_error+enable usually clears it without a power cycle.
+        for _ in range(2):
+            try:
+                self._gripper_motor.clear_error()
+                time.sleep(0.15)
+                self._gripper_motor.enable()
+                time.sleep(0.15)
+            except Exception:
+                pass
 
         # Send the MIT position command immediately — the dedicated 50Hz
         # streaming thread also holds this position continuously. Feedback on

@@ -33,23 +33,28 @@ class GripperConfig:
 
 # Scan pose joint angles (radians).
 # Verified joint mapping from live tests:
-#   idx0 = base rotation       (0.0 = straight forward — confirmed)
-#   idx1 = shoulder pitch      (negative = arm goes UP)
-#   idx2 = elbow               (positive = bends forward/down)
-#   idx3 = forearm roll        (keep 0)
-#   idx4 = unknown             (keep 0)
-#   idx5 = wrist roll          (keep 0 — 1.2 spun gripper 180°)
+#   idx0 = base rotation  (0.0 = straight forward — confirmed)
+#   idx1 = shoulder       (negative = arm goes UP and extends)
+#   idx2 = elbow          (negative = extends forward; positive fights shoulder at this angle)
+#   idx3 = forearm roll   (keep 0)
+#   idx4 = unknown        (keep 0)
+#   idx5 = wrist roll     (keep 0 — any value here spins the gripper)
 #
-# Camera is on TOP of arm. Goal: arm extends UP so camera sees full table
-# below it, while keeping the end-effector angled down.
+# History:
+#   [-0.5, -0.6, 0, 0, 0] → arm extended UP and forward (good extension)
+#   [-0.5, +0.5, 0, 0, 0] → camera looked DOWN (good tilt) but no extension
+#   elbow idx2=+0.5 hits joint limit when shoulder is raised → use negative
 #
+# Solution: raise shoulder high (idx1=-0.9), elbow negative to extend forward
+# This extends the arm UP and forward. Camera on top naturally looks slightly
+# down at the table from this elevated angle.
 #   idx0 =  0.0: base faces FORWARD
-#   idx1 = -0.8: shoulder raises arm UP high
-#   idx2 = +0.5: elbow bends forward so end angles DOWN toward table
+#   idx1 = -0.9: shoulder raises arm UP (more than before)
+#   idx2 = -0.6: elbow extends arm forward (negative works at this angle)
 #   idx3 =  0.0: no forearm roll
 #   idx4 =  0.0: neutral
 #   idx5 =  0.0: NO wrist roll
-DEFAULT_SCAN_JOINTS = [0.0, -0.8, 0.5, 0.0, 0.0, 0.0]
+DEFAULT_SCAN_JOINTS = [0.0, -0.9, -0.6, 0.0, 0.0, 0.0]
 
 
 class VectorBH6ArmDriver:

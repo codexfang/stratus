@@ -34,14 +34,16 @@ class GripperConfig:
 # Scan pose joint angles (radians).
 # Joint layout: [base_rotation, shoulder, elbow, forearm_roll, wrist_pitch, wrist_roll]
 #
-# CRITICAL: Testing shows joint directions may be inverted from documentation
-# - joint[0] = 0.0: base centered (MUST be zero)
+# From testing: joint[4] POSITIVE = wrist DOWN (not negative as expected)
+# joint[0] mechanical zero is off — need small offset to center the base
+#
+# - joint[0] = -0.15: compensate for mechanical zero offset (arm faces FORWARD)
 # - joint[1] = -0.3: shoulder raised
 # - joint[2] = -0.8: elbow extends forward
 # - joint[3] = 0.0: no forearm roll
-# - joint[4] = -1.4: wrist pitch NEGATIVE (testing shows negative = DOWN)
+# - joint[4] = +1.6: wrist pitch POSITIVE = DOWN (testing confirmed)
 # - joint[5] = 0.0: no wrist roll
-DEFAULT_SCAN_JOINTS = [0.0, -0.3, -0.8, 0.0, -1.4, 0.0]
+DEFAULT_SCAN_JOINTS = [-0.15, -0.3, -0.8, 0.0, 1.6, 0.0]
 
 
 class VectorBH6ArmDriver:
@@ -91,20 +93,6 @@ class VectorBH6ArmDriver:
         self._gripper_hold_target = None
         q_curr, _, _ = self._arm.get_state()
         logger.info("[connect] current joints on connect: %s", np.round(q_curr, 3))
-
-        # FORCE joint[0] to exactly 0.0 — base MUST face forward, no tolerance
-        if abs(q_curr[0]) > 0.01:
-            logger.warning("[connect] joint[0] is %.3f (NOT zero) — forcing to 0.0", q_curr[0])
-            q_zero = q_curr.copy()
-            q_zero[0] = 0.0
-            # Send command 3 times to ensure it takes
-            for _ in range(3):
-                self._arm.mit(pos=q_zero, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
-                time.sleep(0.3)
-            q_curr, _, _ = self._arm.get_state()
-            logger.info("[connect] joint[0] after force-reset: %.3f", q_curr[0])
-        else:
-            logger.info("[connect] joint[0] already at zero (%.3f)", q_curr[0])
 
         self._endpos._q_target[:] = q_curr
         self._endpos._loop_cb = lambda ctrl, dt: self._arm_loop(ctrl, dt)
@@ -411,9 +399,6 @@ class VectorBH6ArmDriver:
             t = i / n
             alpha = (1 - np.cos(t * np.pi)) / 2
             q = q_start + alpha * (target - q_start)
-            # Enforce joint[0]=0 if target[0]=0 to prevent base rotation drift
-            if abs(target[0]) < 0.001:
-                q[0] = 0.0
             self._arm.mit(pos=q, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
             if self._gripper_hold_target is not None and self._gripper_motor is not None:
                 try:
@@ -426,11 +411,8 @@ class VectorBH6ArmDriver:
             cv2.waitKey(1)
             if frame_cb:
                 frame_cb()
-        # Final target command with joint[0] enforcement
-        target_final = target.copy()
-        if abs(target[0]) < 0.001:
-            target_final[0] = 0.0
-        self._arm.mit(pos=target_final, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
+        # Final target command
+        self._arm.mit(pos=target, kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
         if self._gripper_hold_target is not None and self._gripper_motor is not None:
             try:
                 self._gripper_motor.send_mit(self._gripper_hold_target, 0.0,

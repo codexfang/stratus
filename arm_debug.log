@@ -1,0 +1,25 @@
+objc[11479]: Class AVFFrameReceiver is implemented in both /Users/seraphicflare/miniconda/envs/rebot/lib/python3.10/site-packages/cv2/.dylibs/libavdevice.61.3.100.dylib (0x103ae43a8) and /Users/seraphicflare/miniconda/envs/rebot/lib/python3.10/site-packages/av/.dylibs/libavdevice.61.3.100.dylib (0x1303603a8). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+objc[11479]: Class AVFAudioReceiver is implemented in both /Users/seraphicflare/miniconda/envs/rebot/lib/python3.10/site-packages/cv2/.dylibs/libavdevice.61.3.100.dylib (0x103ae43f8) and /Users/seraphicflare/miniconda/envs/rebot/lib/python3.10/site-packages/av/.dylibs/libavdevice.61.3.100.dylib (0x1303603f8). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+No calibration file at /Users/seraphicflare/Projects/stratus/calibration/workspace_cal.json — using linear map
+YOLO-World loaded (34 custom classes)
+Gripper attempt 0: pos=0.484 status=1 t_rot=35.0
+Gripper ID 7 enabled in MIT mode (timeout=60s)
+Joint joint1: status=1 pos=0.133
+Joint joint2: status=1 pos=0.004
+Joint joint3: status=1 pos=-0.016
+Joint joint4: status=1 pos=-0.012
+Joint joint5: status=1 pos=0.003
+Joint joint6: status=1 pos=0.105
+[connect] current joints on connect: [      0.133       0.004      -0.016      -0.012       0.003       0.105]
+[connect] joint[0] is 0.133 (NOT zero) — forcing to 0.0
+[connect] joint[0] after force-reset: -0.006
+Camera 0: 1280x720
+Stratus running. Y=pick, N=skip, Q=quit.
+
+Moving arm to scan pose...
+[scan] BEFORE move — current joints: [     -0.006       0.004      -0.016      -0.011       0.006       0.105]
+[scan] TARGET scan pose: [          0        -0.3        -0.8           0        -1.4           0] (4.0s)
+[scan] joint[0]=+0.0000 (MUST be 0 for forward), joint[4]=-1.4000 (negative=DOWN)
+[scan] AFTER move — final joints: [     -0.006      -0.263      -0.731       0.072      -1.397       0.002]
+[scan] joint[0] error: -0.0055 (should be ~0)
+Background captured (arm in scan pose)

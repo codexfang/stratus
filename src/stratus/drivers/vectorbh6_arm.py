@@ -25,8 +25,8 @@ class GripperConfig:
     open_pos: float = 2.5           # open — 4.0 faults the motor, 2.0 worked, 2.5 = a bit more
     close_pos: float = -3.0         # reset close after drop (still within range)
     grip_pos: float = -2.5          # gentle close — tight hold without crushing
-    mit_kp: float = 10.0
-    mit_kd: float = 1.0
+    mit_kp: float = 40.0
+    mit_kd: float = 2.0
     settle_time: float = 2.0        # seconds to wait after sending gripper command
     # ensure_mode uses the EXTENDED CAN protocol (register 10 write). This
     # gripper never acks it ("register 10 write ack not received") and the stray

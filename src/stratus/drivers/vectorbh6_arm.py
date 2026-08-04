@@ -25,7 +25,7 @@ class GripperConfig:
     model: str = "4310"
     open_pos: float = 2.0           # open — 2.0 PROVABLY opened on hardware; 4.0 faults
     close_pos: float = 0.0          # neutral park after drop (safe middle, won't fault)
-    grip_pos: float = -1.8          # gentle close — tight hold on cup without crushing
+    grip_pos: float = -0.8          # gentle close within range (-2.5 over-limit FAULTS motor)
     mit_kp: float = 8.0
     mit_kd: float = 1.0
     settle_time: float = 2.0        # seconds to wait after sending gripper command
@@ -58,13 +58,16 @@ DEFAULT_SCAN_JOINTS = [0.0, -0.5, -0.5, 0.0, 0.0, 0.0]
 
 class VectorBH6ArmDriver:
     def __init__(self, config_path: str | None = None,
-                 gripper: GripperConfig | None = None):
+                 gripper: GripperConfig | None = None,
+                 prime_on_connect: bool = True):
         self._arm = VBArm(config_path)
         self._endpos: ArmEndPos | None = None
         self._gripper_cfg = gripper if gripper is not None else GripperConfig()
         self._gripper_motor = None
         self._gripper_thread = None
         self._gripper_stop = True
+        self._gripper_limp_active = False
+        self._prime_on_connect = prime_on_connect
         # Scan pose used both at startup and when returning home after a pick.
         # Set via move_to_scan_pose(scan_joints=...) before connect() if needed,
         # or override with set_scan_joints() after construction.
@@ -144,11 +147,13 @@ class VectorBH6ArmDriver:
         self._start_gripper_stream()
 
         # Prime the gripper (open->grip->open a few times) so it is definitely
-        # in MIT mode and moving before the first pick.
-        try:
-            self.prime_gripper()
-        except Exception as e:
-            logger.warning("[connect] gripper prime failed (ignored): %s", e)
+        # in MIT mode and moving before the first pick. Skip when disabled
+        # (e.g. the loose-gripper utility must not yank the fingers around).
+        if self._prime_on_connect:
+            try:
+                self.prime_gripper()
+            except Exception as e:
+                logger.warning("[connect] gripper prime failed (ignored): %s", e)
 
     def _init_gripper(self) -> None:
         cfg = self._gripper_cfg
@@ -218,7 +223,7 @@ class VectorBH6ArmDriver:
         while not self._gripper_stop:
             mot = self._gripper_motor
             target = self._gripper_hold_target
-            if mot is not None and target is not None:
+            if mot is not None and not self._gripper_limp_active and target is not None:
                 try:
                     mot.send_mit(target, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
                 except Exception as e:
@@ -247,6 +252,14 @@ class VectorBH6ArmDriver:
                 except Exception:
                     pass
                 time.sleep(0.01)
+            elif mot is not None and self._gripper_limp_active:
+                # Zero-stiffness stream: motor stays powered but applies no
+                # torque, so the fingers can be moved freely by hand.
+                try:
+                    mot.send_mit(0.0, 0.0, 0.0, 0.0, 0.0)
+                except Exception:
+                    pass
+                time.sleep(0.02)
             else:
                 time.sleep(0.02)
 
@@ -317,12 +330,28 @@ class VectorBH6ArmDriver:
         logger.info("[gripper] priming: open %.2f -> grip %.2f x%d",
                     cfg.open_pos, cfg.grip_pos, reps)
         try:
-            self._gripper_motor.clear_error()
-            self._gripper_motor.enable()
-            time.sleep(0.2)
+            # Clear any persistent over-limit fault BEFORE moving: a faulted
+            # motor silently ignores every MIT command until cleared+re-enabled,
+            # and this gripper is prone to faulting if it ever hit an out-of-range
+            # close (e.g. the old -2.5 grip). Retry since acks are unreliable.
+            for _ in range(3):
+                try:
+                    self._gripper_motor.clear_error()
+                    time.sleep(0.15)
+                    self._gripper_motor.enable()
+                    time.sleep(0.2)
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning("[gripper] prime enable issue (ignored): %s", e)
         for i in range(reps):
+            for _ in range(2):
+                try:
+                    self._gripper_motor.clear_error()
+                    self._gripper_motor.enable()
+                    time.sleep(0.15)
+                except Exception:
+                    pass
             logger.info("[gripper] prime cycle %d/%d: OPEN %.2f (%.1fs)", i + 1, reps,
                         cfg.open_pos, wait)
             self.gripper_drive(cfg.open_pos, wait)
@@ -347,6 +376,7 @@ class VectorBH6ArmDriver:
             return
         cfg = self._gripper_cfg
         ctrl = self._arm._ctrl_map.get("damiao")
+        self._gripper_limp_active = False
         self._gripper_hold_target = pos
         if duration <= 0:
             return
@@ -371,18 +401,43 @@ class VectorBH6ArmDriver:
             logger.info("[gripper] no motor — skip open")
             return False
         cfg = self._gripper_cfg
+        self._gripper_limp_active = False
         self._gripper_hold_target = cfg.open_pos
         ok = self._gripper_cmd(cfg.open_pos)
         logger.info("[gripper] open -> %.2f %s", cfg.open_pos, "ok" if ok else "FAILED")
         return ok
 
     def gripper_close(self) -> None:
+        """Park the gripper in a LOOSE state after a drop.
+
+        Zero stiffness (kp=kd=0) — the motor stays powered but the fingers
+        move freely by hand. Called after releasing an object so the next
+        pick starts from a free, predictable state.
+        """
         if self._gripper_motor is None:
             logger.info("[gripper] no motor — skip close")
             return
-        self._gripper_hold_target = self._gripper_cfg.close_pos
-        self._gripper_cmd(self._gripper_cfg.close_pos)
-        logger.info("[gripper] close -> %.2f", self._gripper_cfg.close_pos)
+        self._gripper_hold_target = None
+        self._gripper_limp_active = True
+        logger.info("[gripper] neutral/loose — fingers free")
+
+    def gripper_limp(self, duration: float = 0.0) -> None:
+        """Make the fingers free-moving (zero torque).
+
+        Args:
+            duration: seconds to stay limp; 0 (default) = until the next
+                gripper command (open/grip/drive) cancels it.
+        """
+        if self._gripper_motor is None:
+            logger.info("[gripper] no motor — skip limp")
+            return
+        self._gripper_hold_target = None
+        self._gripper_limp_active = True
+        if duration and duration > 0:
+            time.sleep(duration)
+            self._gripper_limp_active = False
+        logger.info("[gripper] limp: fingers free%s",
+                    f" for {duration}s" if duration else " until next command")
 
     def gripper_grip(self, suppress_open: bool = False) -> bool:
         """Close gripper onto object. Returns True if an object was detected in the grip."""
@@ -393,6 +448,7 @@ class VectorBH6ArmDriver:
         ctrl = self._arm._ctrl_map.get("damiao")
         target = cfg.grip_pos
 
+        self._gripper_limp_active = False
         self._gripper_hold_target = None
         ok = self._gripper_cmd(target)
         if not ok:

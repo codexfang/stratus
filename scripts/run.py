@@ -39,8 +39,8 @@ def main():
                         help="Gripper open position in motor radians (default: 2.0 — PROVEN on hardware)")
     parser.add_argument("--gripper-close", type=float, default=0.0,
                         help="Gripper neutral park position after drop (default: 0.0)")
-    parser.add_argument("--gripper-grip", type=float, default=-1.8,
-                        help="Gripper grip target — gentle tight hold (default: -1.8)")
+    parser.add_argument("--gripper-grip", type=float, default=-0.8,
+                        help="Gripper grip target — gentle, stays in range (default: -0.8)")
     parser.add_argument("--gripper-kp", type=float, default=8.0,
                         help="Gripper MIT kp (default: 8.0, vendor-tuned)")
     parser.add_argument("--gripper-delta", type=float, default=0.5,

@@ -32,18 +32,23 @@ class GripperConfig:
 
 
 # Scan pose joint angles (radians).
-# Joint layout: [base_rotation, shoulder, elbow, forearm_roll, wrist_pitch, wrist_roll]
+# Indices map to: joint1=idx0, joint2=idx1, joint3=idx2, joint4=idx3, joint5=idx4, joint6=idx5
 #
-# From testing: joint[4] POSITIVE = wrist DOWN (not negative as expected)
-# joint[0] mechanical zero is off — need small offset to center the base
+# From live logs (arm_debug.log):
+#   At rest:  [-0.058,  0.002, -0.016, -0.014,  0.005,  0.250]
+#   joint[0] resting at -0.058 → arm faces slightly LEFT at zero
+#             Use +0.058 to correct back to forward-facing center
+#   joint[5] (idx5) resting at 0.250 → this is the wrist/end pitch joint
+#             Increase this to tilt the end DOWN toward the table
 #
-# - joint[0] = -0.15: compensate for mechanical zero offset (arm faces FORWARD)
-# - joint[1] = -0.3: shoulder raised
-# - joint[2] = -0.8: elbow extends forward
-# - joint[3] = 0.0: no forearm roll
-# - joint[4] = +1.6: wrist pitch POSITIVE = DOWN (testing confirmed)
-# - joint[5] = 0.0: no wrist roll
-DEFAULT_SCAN_JOINTS = [-0.15, -0.3, -0.8, 0.0, 1.6, 0.0]
+# Target pose: arm faces STRAIGHT FORWARD, end tilts DOWN to see table
+#   idx0 = +0.06: cancel mechanical zero offset so base faces forward
+#   idx1 = -0.3:  shoulder up
+#   idx2 = -0.8:  elbow extends forward
+#   idx3 =  0.0:  no forearm roll
+#   idx4 =  0.0:  joint5 neutral (was causing UP tilt at +1.6)
+#   idx5 = +1.2:  joint6 tilts end-effector DOWN to see table
+DEFAULT_SCAN_JOINTS = [0.06, -0.3, -0.8, 0.0, 0.0, 1.2]
 
 
 class VectorBH6ArmDriver:
@@ -352,8 +357,8 @@ class VectorBH6ArmDriver:
         logger.info("[scan] BEFORE move — current joints: %s", 
                     np.round(self._arm.get_state()[0], 3))
         logger.info("[scan] TARGET scan pose: %s (%.1fs)", np.round(target, 3), duration)
-        logger.info("[scan] joint[0]=%+.4f (MUST be 0 for forward), joint[4]=%+.4f (negative=DOWN)",
-                    target[0], target[4])
+        logger.info("[scan] idx0(base)=%+.3f idx4(j5)=%+.3f idx5(j6/wrist)=%+.3f",
+                    target[0], target[4], target[5])
         self.move_to_joints(target, duration=duration, frame_cb=frame_cb)
         final_q, _, _ = self._arm.get_state()
         logger.info("[scan] AFTER move — final joints: %s", np.round(final_q, 3))

@@ -22,9 +22,9 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 2.0           # open — verified working range (4.0 faults the motor)
+    open_pos: float = 2.5           # open — 4.0 faults the motor, 2.0 worked, 2.5 = a bit more
     close_pos: float = -3.0         # reset close after drop (still within range)
-    grip_pos: float = -2.0          # gentle hold — motor stalls when object blocks it
+    grip_pos: float = -2.5          # gentle close — tight hold without crushing
     mit_kp: float = 10.0
     mit_kd: float = 1.0
     settle_time: float = 2.0        # seconds to wait after sending gripper command

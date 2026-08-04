@@ -32,23 +32,26 @@ class GripperConfig:
 
 
 # Scan pose joint angles (radians).
-# Indices map to: joint1=idx0, joint2=idx1, joint3=idx2, joint4=idx3, joint5=idx4, joint6=idx5
+# Verified from live logs — all joints rest near zero:
+#   rest: [0.006, 0.007, -0.016, -0.018, -0.039, -0.020]
 #
-# From live logs (arm_debug.log):
-#   At rest:  [-0.058,  0.002, -0.016, -0.014,  0.005,  0.250]
-#   joint[0] resting at -0.058 → arm faces slightly LEFT at zero
-#             Use +0.058 to correct back to forward-facing center
-#   joint[5] (idx5) resting at 0.250 → this is the wrist/end pitch joint
-#             Increase this to tilt the end DOWN toward the table
+# Joint roles confirmed from testing:
+#   idx0 = base rotation (0 = forward — confirmed working)
+#   idx5 = WRIST ROLL — setting this to 1.2 spun gripper 180°, DO NOT USE
+#   idx4 = unknown, leave at 0 for now
 #
-# Target pose: arm faces STRAIGHT FORWARD, end tilts DOWN to see table
-#   idx0 = +0.06: cancel mechanical zero offset so base faces forward
-#   idx1 = -0.3:  shoulder up
-#   idx2 = -0.8:  elbow extends forward
-#   idx3 =  0.0:  no forearm roll
-#   idx4 =  0.0:  joint5 neutral (was causing UP tilt at +1.6)
-#   idx5 = +1.2:  joint6 tilts end-effector DOWN to see table
-DEFAULT_SCAN_JOINTS = [0.06, -0.3, -0.8, 0.0, 0.0, 1.2]
+# To make camera look DOWN at the table the arm needs to lean FORWARD
+# and DOWN using shoulder (idx1) + elbow (idx2).
+# Camera is on TOP of the arm, so tilting the arm forward = camera faces down.
+#
+# Strategy: lean arm forward at an angle so camera points at table
+#   idx0 =  0.0: base faces FORWARD (confirmed working)
+#   idx1 = -0.5: shoulder tilts arm forward/down
+#   idx2 = +0.5: elbow bends to angle end-effector toward table
+#   idx3 =  0.0: no forearm roll
+#   idx4 =  0.0: leave neutral
+#   idx5 =  0.0: NO wrist roll (setting this flipped gripper 180°)
+DEFAULT_SCAN_JOINTS = [0.0, -0.5, 0.5, 0.0, 0.0, 0.0]
 
 
 class VectorBH6ArmDriver:

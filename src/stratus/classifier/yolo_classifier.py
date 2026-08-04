@@ -10,30 +10,121 @@ from ultralytics import YOLO
 
 logger = logging.getLogger(__name__)
 
+# YOLO-World matches class names by text embedding similarity.
+# Listing short common names alongside verbose ones improves recall —
+# "cup" catches mugs/tumblers that the long form misses.
 CLASSES = [
-    "marker", "cup, coffee cup, mug, glass", "pen", "pencil",
-    "cell phone", "phone", "bottle, water bottle", "remote",
-    "keyboard", "mouse, computer mouse", "scissors",
-    "book", "laptop", "watch", "coin", "card", "cable",
-    "charger", "adapter", "battery", "toy", "eraser",
-    "stapler", "tape", "glue", "ruler", "clip",
+    "cup",
+    "mug",
+    "coffee cup",
+    "cup, coffee cup, mug, glass",
+    "pen",
+    "pencil",
+    "marker",
+    "cell phone",
+    "phone",
+    "bottle",
+    "water bottle",
+    "bottle, water bottle",
+    "remote",
+    "keyboard",
+    "mouse",
+    "computer mouse",
+    "mouse, computer mouse",
+    "scissors",
+    "book",
+    "laptop",
+    "watch",
+    "coin",
+    "card",
+    "cable",
+    "charger",
+    "adapter",
+    "battery",
+    "toy",
+    "eraser",
+    "stapler",
+    "tape",
+    "glue",
+    "ruler",
+    "clip",
 ]
 
+# Drop joint angles (degrees) for each bin.
+# These are the joint-space targets the arm slews to when placing into a bin.
 DROP_JOINTS = {
     "A": [60, -10, 40, 0, 10, 0],
     "B": [-60, -10, 40, 0, 10, 0],
     "C": [10, -10, 70, 0, 10, 0],
 }
 
-CALIBRATION_PATH = Path.home() / "stratus/calibration/workspace_cal.json"
+# Which bin each detected class maps to.
+# Short aliases map to the same bin as their verbose counterparts.
+BIN_MAP: dict[str, str] = {
+    "cup":                          "A",
+    "mug":                          "A",
+    "coffee cup":                   "A",
+    "cup, coffee cup, mug, glass":  "A",
+    "bottle":                       "B",
+    "water bottle":                 "B",
+    "bottle, water bottle":         "B",
+    "book":                         "C",
+    "laptop":                       "A",
+    "cell phone":                   "A",
+    "phone":                        "A",
+    "keyboard":                     "A",
+    "mouse":                        "A",
+    "computer mouse":               "A",
+    "mouse, computer mouse":        "A",
+}
+
+CALIBRATION_PATH = Path.home() / "Projects/stratus/calibration/workspace_cal.json"
+
+
+def _box_iou(a: DetectedObject, b: DetectedObject) -> float:
+    """Compute IoU between two normalised DetectedObject boxes."""
+    ax1, ay1 = a.left, a.top
+    ax2, ay2 = a.left + a.width, a.top + a.height
+    bx1, by1 = b.left, b.top
+    bx2, by2 = b.left + b.width, b.top + b.height
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    union = (a.width * a.height) + (b.width * b.height) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _nms_merge(objects: list[DetectedObject],
+               iou_threshold: float = 0.4) -> list[DetectedObject]:
+    """Greedy NMS: for overlapping boxes keep only the highest-confidence one.
+    Handles the case where YOLO-World fires both "cup" and
+    "cup, coffee cup, mug, glass" on the same physical object."""
+    objects = sorted(objects, key=lambda o: o.confidence, reverse=True)
+    kept: list[DetectedObject] = []
+    suppressed = set()
+    for i, obj in enumerate(objects):
+        if i in suppressed:
+            continue
+        kept.append(obj)
+        for j in range(i + 1, len(objects)):
+            if j not in suppressed and _box_iou(obj, objects[j]) > iou_threshold:
+                suppressed.add(j)
+    return kept
 
 
 class YOLOClassifier:
-    def __init__(self, model_path: str = "models/yolov8s-world.pt",
-                 conf_threshold: float = 0.15,
-                 map_offset_x: float = 0.15, map_scale_x: float = 0.50,
-                 map_offset_y: float = -0.20, map_scale_y: float = 0.40,
-                 pickup_z: float = 0.15, pitch: float = 0.2):
+    def __init__(
+        self,
+        model_path: str = "models/yolov8s-world.pt",
+        conf_threshold: float = 0.10,   # lowered from 0.15 — catches cups more reliably
+        # Linear map: arm_x = map_offset_x + cx_norm * map_scale_x
+        map_offset_x: float = 0.15,
+        map_scale_x: float = 0.50,
+        map_offset_y: float = -0.20,
+        map_scale_y: float = 0.40,
+        pickup_z: float = 0.10,
+        pitch: float = 0.4,
+    ):
         path = Path(model_path)
         if not path.exists():
             logger.info("Downloading YOLO-World model (first run)...")
@@ -48,8 +139,8 @@ class YOLOClassifier:
         self._pitch = pitch
         self._bg_captured = False
 
-        # Load calibration if available
-        self._homography = None
+        # Workspace homography (loaded from calibration file if present)
+        self._homography: np.ndarray | None = None
         self._use_calibration = False
         self._load_calibration()
 
@@ -57,27 +148,28 @@ class YOLOClassifier:
 
     def _load_calibration(self) -> None:
         if not CALIBRATION_PATH.exists():
-            logger.info("No calibration file at %s, using linear map", CALIBRATION_PATH)
+            logger.info("No calibration file at %s — using linear map", CALIBRATION_PATH)
             return
         try:
             import json
             with open(CALIBRATION_PATH) as f:
                 cal = json.load(f)
-            # Support both "matrix" and "homography" keys for backward compat
-            H = np.array(cal.get("matrix") or cal.get("homography", []), dtype=np.float32)
+            # Support both "matrix" and "homography" keys
+            H = np.array(cal.get("homography") or cal.get("matrix", []), dtype=np.float32)
             if H.shape == (3, 3):
-                # Only use homography if calibration error is reasonable (< 20mm)
                 mean_err = cal.get("mean_error_mm", 999)
                 if mean_err < 20:
                     self._homography = H
                     self._use_calibration = True
-                    logger.info("Loaded workspace calibration from %s (type=%s, err=%.1fmm)",
-                                CALIBRATION_PATH, cal.get("type", "homography"),
-                                cal.get("mean_error_mm", 0))
+                    logger.info(
+                        "Loaded workspace calibration (err=%.1f mm)", mean_err
+                    )
                 else:
-                    logger.warning("Calibration error %.1fmm too high, ignoring homography", mean_err)
+                    logger.warning(
+                        "Calibration error %.1f mm too high — ignoring", mean_err
+                    )
             else:
-                logger.warning("Calibration matrix invalid shape: %s", H.shape)
+                logger.warning("Calibration matrix bad shape: %s", H.shape)
         except Exception as e:
             logger.warning("Failed to load calibration: %s", e)
 
@@ -94,67 +186,84 @@ class YOLOClassifier:
                 pickup_pose=None, drop_joints=DROP_JOINTS["B"],
             )
 
-        results = self._model(frame.image, conf=self._conf, verbose=False, iou=0.5)[0]
+        results = self._model(frame.image, conf=self._conf, verbose=False, iou=0.45)[0]
 
-        labels = []
-        objects = []
+        objects: list[DetectedObject] = []
         for b in results.boxes:
             cls_id = int(b.cls[0])
             conf = float(b.conf[0])
             label = results.names[cls_id]
             x1, y1, x2, y2 = map(int, b.xyxy[0])
-            labels.append({"label": label, "confidence": conf})
+            # Clamp to frame bounds
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+            if x2 <= x1 or y2 <= y1:
+                continue
             objects.append(DetectedObject(
-                name=label, confidence=conf,
-                left=x1 / w, top=y1 / h,
-                width=(x2 - x1) / w, height=(y2 - y1) / h,
+                name=label,
+                confidence=conf,
+                left=x1 / w,
+                top=y1 / h,
+                width=(x2 - x1) / w,
+                height=(y2 - y1) / h,
             ))
 
-        unique = list(dict.fromkeys(l["label"] for l in labels))
-        logger.info(f"Detected: {unique}")
-
-        if not unique:
-            logger.info("No objects detected")
+        if not objects:
             return TriageCommand(
                 action="none", target_bin="", label="",
                 detected_labels=[], detected_objects=[],
                 pickup_pose=None, drop_joints=None,
             )
 
-        # Select highest confidence object
+        # Deduplicate: when both "cup" and "cup, coffee cup, mug, glass" fire,
+        # keep only the highest-confidence one for each spatial location.
+        # We do a simple IoU merge — boxes with IoU > 0.4 keep only the top conf.
+        objects = _nms_merge(objects, iou_threshold=0.4)
+
+        unique_labels = list(dict.fromkeys(o.name for o in objects))
+        logger.info("Detected (post-NMS): %s", unique_labels)
+
+        # Pick the highest-confidence detection as the primary pick target
         obj = max(objects, key=lambda o: o.confidence)
-        cx = (obj.left + obj.width / 2)
-        cy = (obj.top + obj.height / 2)
 
-        # Determine target bin based on object class
-        bin_map = {
-            "cup, coffee cup, mug, glass": "A",
-            "bottle, water bottle": "B",
-            "book": "C",
-        }
-        target = bin_map.get(obj.name, "A")
-        grade = "A"
+        # Normalised centre of the bounding box (0-1)
+        cx = obj.left + obj.width / 2
+        cy = obj.top + obj.height / 2
 
-        # Use calibration homography if available, else linear map
+        bin_key = BIN_MAP.get(obj.name, "A")
+        target_bin = f"bin_{bin_key.lower()}"
+
+        # Pixel → arm-workspace conversion
         if self._use_calibration and self._homography is not None:
-            # H maps pixel (x,y,1) -> world (x,y,w); use H directly
-            pt = np.array([cx * w, cy * h, 1.0], dtype=np.float32)
-            proj = self._homography @ pt
-            map_x, map_y = proj[0] / proj[2], proj[1] / proj[2]
-            logger.info(f"Calibrated pick: ({map_x:.3f}, {map_y:.3f}) from pixel ({cx*w:.1f},{cy*h:.1f})")
+            px_abs = cx * w
+            py_abs = cy * h
+            pt = np.array([[[px_abs, py_abs]]], dtype=np.float32)
+            out = cv2.perspectiveTransform(pt, self._homography)
+            map_x = float(out[0, 0, 0])
+            map_y = float(out[0, 0, 1])
+            logger.info("Calibrated pick: (%.3f, %.3f) from pixel (%.1f, %.1f)",
+                        map_x, map_y, px_abs, py_abs)
         else:
             map_x = self._map_offset_x + cx * self._map_scale_x
             map_y = self._map_offset_y + cy * self._map_scale_y
-            logger.info(f"Linear map pick: ({map_x:.3f}, {map_y:.3f}) from pixel ({cx*w:.1f},{cy*h:.1f})")
+            logger.info("Linear map pick: (%.3f, %.3f) from centre (%.3f, %.3f)",
+                        map_x, map_y, cx, cy)
 
-        logger.info(f"Pick {obj.name} at ({map_x:.3f}, {map_y:.3f}) -> bin_{target.lower()}")
+        logger.info("Pick '%s' -> %s at arm (%.3f, %.3f)", obj.name, target_bin, map_x, map_y)
 
         return TriageCommand(
-            action="pick_and_place", target_bin=f"bin_{target.lower()}",
-            label=f"Grade {grade} - Refurbishable",
-            detected_labels=unique[:5],
+            action="pick_and_place",
+            target_bin=target_bin,
+            label="Grade A - Refurbishable",
+            detected_labels=unique_labels[:5],
             detected_objects=objects,
-            pickup_pose={"x": map_x, "y": map_y, "z": self._pickup_z,
-                         "roll": 0, "pitch": self._pitch, "yaw": 0},
-            drop_joints=DROP_JOINTS[target],
+            pickup_pose={
+                "x": map_x,
+                "y": map_y,
+                "z": self._pickup_z,
+                "roll": 0,
+                "pitch": self._pitch,
+                "yaw": 0,
+            },
+            drop_joints=DROP_JOINTS[bin_key],
         )

@@ -22,13 +22,21 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 2.0
+    open_pos: float = 4.0           # wide open — confirmed working range from test_gripper.py
     close_pos: float = -5.0
-    grip_pos: float = -3.0
+    grip_pos: float = -3.0          # close command; motor stops when object blocks it
     mit_kp: float = 10.0
     mit_kd: float = 1.0
-    settle_time: float = 4.0
-    approach_inset: float = 0.03
+    settle_time: float = 2.0        # seconds to wait after sending gripper command
+    grip_delta_threshold: float = 0.8  # min pos delta vs target to confirm object held
+
+
+# Joint-space scan pose: arm extended upward so top-mounted camera
+# looks down at the full workspace in front of the base.
+# Units: radians.  Tune joint[1] (shoulder pitch) to get the right tilt.
+# Positive joint[1] raises the forearm; joint[2] (elbow) controls reach.
+# These defaults work for a ~60 cm arm with camera on the wrist/forearm.
+DEFAULT_SCAN_JOINTS = [0.0, -0.6, -0.8, 0.0, 1.4, 0.0]
 
 
 class VectorBH6ArmDriver:
@@ -36,14 +44,13 @@ class VectorBH6ArmDriver:
                  gripper: GripperConfig | None = None):
         self._arm = VBArm(config_path)
         self._endpos: ArmEndPos | None = None
-        self._gripper_cfg = gripper
+        self._gripper_cfg = gripper if gripper is not None else GripperConfig()
         self._gripper_motor = None
 
     def connect(self) -> None:
         from motorbridge import Mode
         self._arm.connect()
-        if self._gripper_cfg is not None:
-            self._init_gripper()
+        self._init_gripper()
         self._arm.mode_mit()
         time.sleep(0.3)
         self._arm.enable()
@@ -132,7 +139,7 @@ class VectorBH6ArmDriver:
                         return
                 time.sleep(0.15)
 
-            logger.warning("Gripper ID %d failed to enable (status != 1 after 30 attempts)", cfg.motor_id)
+            logger.warning("Gripper ID %d failed to enable after 30 attempts", cfg.motor_id)
             self._gripper_motor = mot
         except Exception as e:
             logger.warning("Gripper init failed: %s", e)
@@ -204,8 +211,8 @@ class VectorBH6ArmDriver:
                                    st.status_code if st else 'None', retry)
                     continue
                 self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
-                for _ in range(int(cfg.settle_time / 0.5)):
-                    time.sleep(0.5)
+                for _ in range(int(cfg.settle_time / 0.2)):
+                    time.sleep(0.2)
                     self._gripper_motor.request_feedback()
                     time.sleep(0.02)
                     if ctrl:
@@ -223,26 +230,26 @@ class VectorBH6ArmDriver:
 
     def gripper_open(self) -> bool:
         if self._gripper_motor is None:
-            logger.info("[gripper] no motor")
+            logger.info("[gripper] no motor — skip open")
             return False
         cfg = self._gripper_cfg
         self._gripper_hold_target = cfg.open_pos
         ok = self._gripper_cmd(cfg.open_pos)
-        logger.info("[gripper] open -> %.2f %s", cfg.open_pos,
-                    "ok" if ok else "FAILED")
+        logger.info("[gripper] open -> %.2f %s", cfg.open_pos, "ok" if ok else "FAILED")
         return ok
 
     def gripper_close(self) -> None:
         if self._gripper_motor is None:
-            logger.info("[gripper] no motor")
+            logger.info("[gripper] no motor — skip close")
             return
         self._gripper_hold_target = self._gripper_cfg.close_pos
         self._gripper_cmd(self._gripper_cfg.close_pos)
         logger.info("[gripper] close -> %.2f", self._gripper_cfg.close_pos)
 
-    def gripper_grip(self) -> bool:
+    def gripper_grip(self, suppress_open: bool = False) -> bool:
+        """Close gripper onto object. Returns True if an object was detected in the grip."""
         if self._gripper_motor is None:
-            logger.info("[gripper] no motor")
+            logger.info("[gripper] no motor — skip grip")
             return False
         cfg = self._gripper_cfg
         ctrl = self._arm._ctrl_map.get("damiao")
@@ -252,7 +259,8 @@ class VectorBH6ArmDriver:
         ok = self._gripper_cmd(target)
         if not ok:
             logger.warning("[gripper] grip cmd failed")
-            self.gripper_open()
+            if not suppress_open:
+                self.gripper_open()
             return False
 
         st = None
@@ -266,31 +274,28 @@ class VectorBH6ArmDriver:
                 break
 
         if st is None:
-            self.gripper_open()
+            if not suppress_open:
+                self.gripper_open()
             return False
 
         actual = st.pos
         delta = abs(actual - target)
 
-        if delta > 0.5:
-            logger.info("[gripper] object at pos=%.3f (delta=%.3f) — gripped", actual, delta)
-            self._gripper_hold_target = target
+        # delta > threshold means gripper was blocked by an object before reaching full close
+        if delta > cfg.grip_delta_threshold:
+            logger.info("[gripper] GRIPPED object: pos=%.3f (delta=%.3f threshold=%.3f)",
+                        actual, delta, cfg.grip_delta_threshold)
+            self._gripper_hold_target = actual  # hold at blocked position
             return True
         else:
-            logger.info("[gripper] no object pos=%.3f (delta=%.3f) — missed", actual, delta)
-            self.gripper_open()
+            logger.info("[gripper] MISSED: pos=%.3f (delta=%.3f threshold=%.3f) — no object",
+                        actual, delta, cfg.grip_delta_threshold)
+            if not suppress_open:
+                self.gripper_open()
             return False
-            return True
 
-        actual = st.pos
-        delta = abs(actual - target)
-
-        if delta > 0.5:
-            logger.info("[gripper] object at pos=%.3f (delta=%.3f) — gripped", actual, delta)
-            return True
-        else:
-            logger.info("[gripper] no object pos=%.3f (delta=%.3f) — missed", actual, delta)
-            return False
+    def get_state(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return self._arm.get_state()
 
     def get_observation(self) -> ArmObservation:
         pos, vel, torq = self._arm.get_state()
@@ -300,6 +305,33 @@ class VectorBH6ArmDriver:
 
     def send_joint_positions(self, positions: npt.NDArray[np.float64]) -> None:
         self._arm.mit(pos=positions)
+
+    def move_to_joints(self, q_target: np.ndarray, duration: float = 4.0,
+                       frame_cb: callable = None) -> None:
+        """Move to target joint positions using smooth cosine-interpolated slewing."""
+        q_target = np.asarray(q_target, dtype=np.float64)
+        self._arm.stop_control_loop()
+        self._slew_mit(q_target, duration, frame_cb=frame_cb)
+        self._endpos._q_target[:] = q_target.copy()
+        self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
+
+    def move_to_scan_pose(self, scan_joints: list[float] | None = None,
+                          duration: float = 4.0,
+                          frame_cb: callable = None) -> None:
+        """Raise arm to the scan pose so the top-mounted camera can see the
+        full workspace below/in front of it.
+
+        scan_joints: 6-element list of target joint angles in radians.
+                     Defaults to DEFAULT_SCAN_JOINTS if None.
+        duration:    time to complete the move (seconds).
+        """
+        target = np.array(
+            scan_joints if scan_joints is not None else DEFAULT_SCAN_JOINTS,
+            dtype=np.float64,
+        )
+        logger.info("[scan] moving to scan pose %s (%.1fs)", np.round(target, 3), duration)
+        self.move_to_joints(target, duration=duration, frame_cb=frame_cb)
+        logger.info("[scan] scan pose reached")
 
     def move_to_pose(self, x: float, y: float, z: float,
                      roll: float = 0, pitch: float = 0, yaw: float = 0,
@@ -333,6 +365,7 @@ class VectorBH6ArmDriver:
 
     def _slew_mit(self, target: npt.NDArray[np.float64], duration: float = 6.0,
                   frame_cb: callable = None) -> None:
+        """Cosine-interpolated slew to target joint positions."""
         q_start, _, _ = self._arm.get_state()
         n = max(1, int(duration / 0.05))
         dt = duration / n
@@ -365,111 +398,167 @@ class VectorBH6ArmDriver:
             frame_cb()
 
     def execute_triage(self, command: TriageCommand, frame_cb: callable = None) -> bool:
+        """
+        Full pick-and-place sequence.
+
+        The engine calls this AFTER _approach_and_pick() has moved the arm to
+        HOVER_Z above the object with gripper already open. Sequence:
+
+            1. Descend to approach height (object + 8 cm)    — gripper still open
+            2. Open gripper explicitly (confirm fully open near object)
+            3. Nudge forward 3 cm into the object             — gripper wraps around it
+            4. Close gripper firmly to hold
+            5. Retry once lower if missed
+            6. Lift to clearance height
+            7. Transport to drop location
+            8. Open gripper to release
+            9. Return to scan pose (home)
+        """
         if not command.pickup_pose:
+            logger.warning("[triage] no pickup_pose — aborting")
             return False
-        pu = command.pickup_pose
-        px = pu.get("x", 0)
-        py = pu.get("y", 0)
-        pz = pu.get("z", 0)
-        pitch = pu.get("pitch", 0)
-        inset = pu.get("inset")
-        if inset is None:
-            inset = self._gripper_cfg.approach_inset if self._gripper_cfg else 0.03
 
         logger.info("[triage] start: %s", command.detected_labels[:3])
 
-        pre_z = max(pz + 0.20, 0.30)
+        pu = command.pickup_pose
+        px = pu.get("x", 0.0)
+        py = pu.get("y", 0.0)
+        pz = pu.get("z", 0.10)      # object surface height
+        pitch = pu.get("pitch", 0.4)
 
-        if not command.pickup_refined:
-            logger.info("[triage] pre-approach up (z=%.3f)", pre_z)
-            if not self.move_to_pose(x=px, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
-                                     duration=8.0, frame_cb=frame_cb):
-                logger.warning("pre-approach failed")
-                return False
-
-            logger.info("[triage] open gripper (above object)")
-            if frame_cb:
-                frame_cb()
-            self.gripper_open()
-
-            logger.info("[triage] descend to approach (z=%.3f)", pz + 0.05)
-            if not self.move_to_pose(x=px, y=py, z=pz + 0.05, roll=0, pitch=pitch, yaw=0,
-                                     duration=5.0, frame_cb=frame_cb):
-                logger.warning("approach failed")
-                return False
-        else:
-            logger.info("[triage] refined — descend to approach")
-            if not command.gripper_open_done:
-                if frame_cb:
-                    frame_cb()
-                self.gripper_open()
-            logger.info("[triage] descend to approach (z=%.3f)", pz + 0.05)
-            if not self.move_to_pose(x=px, y=py, z=pz + 0.05, roll=0, pitch=pitch, yaw=0,
-                                     duration=5.0, frame_cb=frame_cb):
-                logger.warning("approach failed")
-                return False
-
-        logger.info("[triage] small forward & down for grip")
-        if not self.move_to_pose(x=px + 0.02, y=py, z=pz, roll=0, pitch=pitch, yaw=0,
+        # ── 1. Descend to just above the object ───────────────────────────
+        approach_z = pz + 0.08      # 8 cm above object — gripper fingers clear the top
+        logger.info("[triage] descend to approach z=%.3f", approach_z)
+        if not self.move_to_pose(x=px, y=py, z=approach_z,
+                                 roll=0, pitch=pitch, yaw=0,
                                  duration=3.0, frame_cb=frame_cb):
-            logger.warning("final approach failed")
-            return False
+            logger.warning("[triage] approach IK failed — joint-space descent")
+            q, _, _ = self._arm.get_state()
+            q_down = q.copy()
+            q_down[2] += 0.35
+            self.move_to_joints(q_down, duration=2.5, frame_cb=frame_cb)
 
-        logger.info("[triage] grip object")
+        # ── 2. Open gripper here — fingers spread around the object ───────
         if frame_cb:
             frame_cb()
-        if not self.gripper_grip():
-            logger.warning("[triage] grip missed — retry at same pose")
-            if not self.gripper_grip():
-                logger.warning("[triage] second grip also missed")
-
-        logger.info("[triage] lift (z=%.3f)", pre_z)
-        self.move_to_pose(x=px + 0.02, y=py, z=pre_z, roll=0, pitch=pitch, yaw=0,
-                          duration=6.0, frame_cb=frame_cb)
-
-        if command.drop_joints is not None:
-            target = np.deg2rad(command.drop_joints)
-            logger.info("[triage] drop to joints %s", target)
-            self._arm.stop_control_loop()
-            self._slew_mit(target, duration=8.0, frame_cb=frame_cb)
-            self._endpos._q_target[:] = target
-            self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
-            time.sleep(0.5)
-            if frame_cb:
-                frame_cb()
-        elif command.drop_pose:
-            self.move_to_pose(**command.drop_pose, duration=8.0, frame_cb=frame_cb)
-
-        logger.info("[triage] release")
-        if frame_cb:
-            frame_cb()
+        logger.info("[triage] opening gripper beside object")
         self.gripper_open()
 
-        logger.info("[triage] return home")
+        # ── 3. Descend to grip height ─────────────────────────────────────
+        logger.info("[triage] descend to grip z=%.3f", pz)
+        if not self.move_to_pose(x=px, y=py, z=pz,
+                                 roll=0, pitch=pitch, yaw=0,
+                                 duration=2.0, frame_cb=frame_cb):
+            q, _, _ = self._arm.get_state()
+            q_grip = q.copy()
+            q_grip[2] += 0.22
+            self.move_to_joints(q_grip, duration=1.8, frame_cb=frame_cb)
+
+        # ── 4. Nudge forward 3 cm into the object ────────────────────────
+        # This pushes the cup into the gripper fingers so the close has
+        # something to bite on rather than closing on air beside the cup.
+        nudge_x = px + 0.03
+        logger.info("[triage] nudge forward to x=%.3f", nudge_x)
+        if not self.move_to_pose(x=nudge_x, y=py, z=pz,
+                                 roll=0, pitch=pitch, yaw=0,
+                                 duration=1.2, frame_cb=frame_cb):
+            # Joint-space nudge: increase shoulder extension slightly
+            q, _, _ = self._arm.get_state()
+            q_nudge = q.copy()
+            q_nudge[1] += 0.06
+            self.move_to_joints(q_nudge, duration=1.0, frame_cb=frame_cb)
+
+        # ── 5. Close gripper firmly ───────────────────────────────────────
+        if frame_cb:
+            frame_cb()
+        logger.info("[triage] closing gripper...")
+        gripped = self.gripper_grip(suppress_open=False)
+
+        if not gripped:
+            # One retry: descend another 2 cm and nudge again
+            logger.warning("[triage] grip missed — descending 2 cm and retrying")
+            q, _, _ = self._arm.get_state()
+            q_lower = q.copy()
+            q_lower[2] += 0.10
+            self.move_to_joints(q_lower, duration=0.8, frame_cb=frame_cb)
+            if frame_cb:
+                frame_cb()
+            gripped = self.gripper_grip(suppress_open=False)
+            if not gripped:
+                logger.warning("[triage] second grip missed — aborting pick")
+                self._safe_return_home(frame_cb)
+                return False
+
+        # ── 6. Lift to clearance height ───────────────────────────────────
+        lift_z = max(pz + 0.30, 0.34)
+        logger.info("[triage] lifting to z=%.3f", lift_z)
+        if not self.move_to_pose(x=nudge_x, y=py, z=lift_z,
+                                 roll=0, pitch=pitch, yaw=0,
+                                 duration=4.0, frame_cb=frame_cb):
+            q, _, _ = self._arm.get_state()
+            q_lift = q.copy()
+            q_lift[2] = min(q_lift[2] - 0.7, -0.5)  # straighten elbow = raise end-effector
+            q_lift[1] -= 0.15
+            self.move_to_joints(q_lift, duration=3.5, frame_cb=frame_cb)
+
+        # ── 7. Transport to drop location ─────────────────────────────────
+        if command.drop_joints is not None:
+            target_q = np.deg2rad(np.array(command.drop_joints, dtype=np.float64))
+            logger.info("[triage] transporting to drop joints %s", np.round(target_q, 3))
+            self.move_to_joints(target_q, duration=5.0, frame_cb=frame_cb)
+        elif command.drop_pose:
+            logger.info("[triage] transporting to drop pose %s", command.drop_pose)
+            self.move_to_pose(**command.drop_pose, duration=6.0, frame_cb=frame_cb)
+        else:
+            logger.warning("[triage] no drop target — dropping in place")
+
+        # ── 8. Release ────────────────────────────────────────────────────
+        if frame_cb:
+            frame_cb()
+        logger.info("[triage] releasing into bin")
+        self.gripper_open()
+        time.sleep(0.4)     # let object settle before arm swings away
+
+        # ── 9. Return home / scan pose ────────────────────────────────────
         self._safe_return_home(frame_cb)
         logger.info("[triage] done")
         return True
 
     def _safe_return_home(self, frame_cb: callable = None) -> None:
+        """Return arm to the scan pose via a safe clearance arc.
+        We go to scan pose (not joint zeros) so the camera is immediately
+        ready for the next detection cycle."""
         q, _, _ = self._arm.get_state()
-        logger.info("[triage] returning home from joints %s", np.round(q, 3))
+        logger.info("[triage] returning to scan pose from %s", np.round(q, 3))
 
         self._arm.stop_control_loop()
+
+        # First raise elbow to a safe clearance before rotating base/shoulder,
+        # to avoid sweeping the arm through objects on the table.
         clearance = q.copy()
-        clearance[2] = max(q[2], 1.2)
-        if np.any(np.abs(clearance - q) > 0.01):
-            logger.info("[triage] raise to clearance joints %s", np.round(clearance, 3))
-            self._slew_mit(clearance, duration=3.0, frame_cb=frame_cb)
-        self._slew_mit(np.zeros(6), duration=5.0, frame_cb=frame_cb)
-        self._endpos._q_target[:] = np.zeros(6)
+        clearance[2] = min(q[2], -0.4)   # straighten elbow (negative = up on this arm)
+        if np.any(np.abs(clearance - q) > 0.02):
+            logger.info("[triage] elbow clearance %s", np.round(clearance, 3))
+            self._slew_mit(clearance, duration=2.5, frame_cb=frame_cb)
+
+        # Slew to scan pose
+        scan_q = np.array(DEFAULT_SCAN_JOINTS, dtype=np.float64)
+        self._slew_mit(scan_q, duration=5.0, frame_cb=frame_cb)
+        self._endpos._q_target[:] = scan_q
         self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
         time.sleep(0.5)
         if frame_cb:
             frame_cb()
-        logger.info("[triage] home")
+        logger.info("[triage] scan pose reached")
 
     def disable(self) -> None:
         self._arm.disable()
+
+    def stop_control_loop(self) -> None:
+        self._arm.stop_control_loop()
+
+    def start_control_loop(self, callback, rate: int = 10) -> None:
+        self._arm.start_control_loop(callback, rate=rate)
 
     def disconnect(self) -> None:
         if self._endpos:

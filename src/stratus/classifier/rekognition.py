@@ -2,7 +2,6 @@ from __future__ import annotations
 import cv2
 import numpy as np
 import logging
-import time
 
 from stratus.core.vision import CameraFrame
 from stratus.core.arm_driver import TriageCommand, DetectedObject
@@ -15,47 +14,54 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-GRADE_A = {"Electronics", "Circuit Board", "Computer Component", "CPU",
-           "Server", "Hardware", "Chip", "Processor", "Memory", "RAM",
-           "Network Equipment", "Router", "Switch", "Modem",
-           "Hard Drive", "SSD", "Storage Device",
-           "Camera", "Lens", "Sensor", "Optics",
-           "Adapter", "Connector", "Cable", "Wire",
-           "Keyboard", "Mouse", "Peripheral",
-           "Cell Phone", "Smartphone", "Tablet Computer", "Laptop",
-           "Computer", "Desktop", "Monitor", "Screen",
-           "Battery", "Power Supply", "Charger",
-           "Microchip", "Integrated Circuit", "PCB", "Motherboard",
-           "Drive", "Disk", "Flash Drive", "Memory Card",
-           "Network Card", "Graphics Card", "Video Card", "GPU",
-           "Heat Sink", "Fan", "Cooler", "Controller",
-           "Electronic Device", "Device", "Tool",
-           "Equipment", "Machine", "Appliance",
-           "Toy", "Figure", "Miniature",
-           "Office Supply", "Stationery", "Writing Instrument",
-           "Pen", "Pencil", "Marker", "Highlighter",
-           "Eraser", "Ruler", "Scissors", "Tape", "Glue",
-           "Book", "Document", "Notebook", "Folder",
-           "Bottle", "Container", "Cup", "Mug",
-           "Can", "Box", "Package", "Bag", "Wrap",
-           "Key", "Lock", "Padlock", "Badge", "ID Card",
-           "Coin", "Money", "Currency", "Card",
-           "Jewelry", "Ring", "Watch", "Bracelet", "Necklace",
-           "Clothing", "Hat", "Cap", "Glove", "Shoe",
-           "Food", "Snack", "Fruit", "Vegetable",
-           "Utensil", "Spoon", "Fork", "Knife",
-           "Plant", "Flower", "Leaf", "Branch"}
+# Drop joint angles (degrees) keyed by bin name
+DROP_JOINTS = {
+    "bin_a": [45, -30, 30, 0, 0, 0],
+    "bin_b": [-45, -30, 30, 0, 0, 0],
+    "bin_c": [0, -50, 60, 0, 0, 0],
+}
 
-GRADE_C = {"Damage", "Scratch", "Crack", "Dent", "Rust", "Corrosion",
-           "Broken", "Fracture", "Worn", "Defect", "Stain",
-           "Crumpled", "Torn", "Bent", "Burn",
-           "Ripped", "Faded", "Discolored",
-           "Cracked", "Shattered", "Chipped",
-           "Scratched", "Dented", "Rusted", "Corroded",
-           "Broken", "Fractured"}
+GRADE_C = {
+    "damage", "scratch", "crack", "dent", "rust", "corrosion",
+    "broken", "fracture", "worn", "defect", "stain",
+    "crumpled", "torn", "bent", "burn",
+    "ripped", "faded", "discolored",
+    "cracked", "shattered", "chipped",
+    "scratched", "dented", "rusted", "corroded", "fractured",
+}
 
-GRADE_C_LABELS = {l.lower() for l in GRADE_C}
-GRADE_A_LABELS = {l.lower() for l in GRADE_A}
+GRADE_A = {
+    "electronics", "circuit board", "computer component", "cpu",
+    "server", "hardware", "chip", "processor", "memory", "ram",
+    "network equipment", "router", "switch", "modem",
+    "hard drive", "ssd", "storage device",
+    "camera", "lens", "sensor", "optics",
+    "adapter", "connector", "cable", "wire",
+    "keyboard", "mouse", "peripheral",
+    "cell phone", "smartphone", "tablet computer", "laptop",
+    "computer", "desktop", "monitor", "screen",
+    "battery", "power supply", "charger",
+    "microchip", "integrated circuit", "pcb", "motherboard",
+    "drive", "disk", "flash drive", "memory card",
+    "network card", "graphics card", "video card", "gpu",
+    "heat sink", "fan", "cooler", "controller",
+    "electronic device", "device", "tool",
+    "equipment", "machine", "appliance",
+    "toy", "figure", "miniature",
+    "office supply", "stationery", "writing instrument",
+    "pen", "pencil", "marker", "highlighter",
+    "eraser", "ruler", "scissors", "tape", "glue",
+    "book", "document", "notebook", "folder",
+    "bottle", "container", "cup", "mug",
+    "can", "box", "package", "bag", "wrap",
+    "key", "lock", "padlock", "badge", "id card",
+    "coin", "money", "currency", "card",
+    "jewelry", "ring", "watch", "bracelet", "necklace",
+    "clothing", "hat", "cap", "glove", "shoe",
+    "food", "snack", "fruit", "vegetable",
+    "utensil", "spoon", "fork", "knife",
+    "plant", "flower", "leaf", "branch",
+}
 
 
 class RekognitionClassifier:
@@ -78,50 +84,56 @@ class RekognitionClassifier:
         l = clahe.apply(l)
         enhanced = cv2.merge([l, a, b])
         enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
-        sharp = cv2.addWeighted(enhanced, 1.5, cv2.GaussianBlur(enhanced, (0, 0), 2.0), -0.5, 0)
+        sharp = cv2.addWeighted(
+            enhanced, 1.5, cv2.GaussianBlur(enhanced, (0, 0), 2.0), -0.5, 0
+        )
         return sharp
 
     def _rekognize(self, img: np.ndarray) -> list[str]:
         enhanced = self._enhance(img)
-        _, buffer = cv2.imencode(".jpg", enhanced, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        _, buffer = cv2.imencode(
+            ".jpg", enhanced, [cv2.IMWRITE_JPEG_QUALITY, 95]
+        )
         response = self._client.detect_labels(
             Image={"Bytes": buffer.tobytes()},
-            MaxLabels=30, MinConfidence=self._min_conf,
+            MaxLabels=30,
+            MinConfidence=self._min_conf,
         )
-        names = [l["Name"] for l in response["Labels"]]
-        return names
+        return [lbl["Name"] for lbl in response["Labels"]]
 
     def _grade(self, labels: list[str]) -> tuple[str, str, str]:
-        lower = {l.lower() for l in labels}
-        if lower & GRADE_C_LABELS:
+        lower = {lbl.lower() for lbl in labels}
+        if lower & GRADE_C:
             return "C", "Scrap/Recycle", "bin_c"
-        if lower & GRADE_A_LABELS:
+        if lower & GRADE_A:
             return "A", "Refurbishable", "bin_a"
         return "B", "Needs Repair", "bin_b"
 
     def classify(self, frame: CameraFrame) -> TriageCommand:
         h, w = frame.image.shape[:2]
-        margin_x, margin_y = int(w * 0.35), int(h * 0.35)
-        ws_x1, ws_y1 = margin_x, margin_y
-        ws_x2, ws_y2 = w - margin_x, h - margin_y
 
+        # If no background has been set yet, scan the full centre crop
         if not self._bg_captured:
-            crop = frame.image[ws_y1:ws_y2, ws_x1:ws_x2]
+            margin_x = int(w * 0.35)
+            margin_y = int(h * 0.35)
+            crop = frame.image[margin_y: h - margin_y, margin_x: w - margin_x]
             upscaled = cv2.resize(crop, (w, h), interpolation=cv2.INTER_CUBIC)
             names = self._rekognize(upscaled)
             top = names[:5] if names else ["scanning..."]
-            grade, text, target = self._grade(names)
-            logger.info(f"No background. Labels: {top}")
+            grade, text, target_bin = self._grade(names)
+            logger.info("No background. Labels: %s", top)
+            # Default pickup in the centre of the arm workspace
             return TriageCommand(
-                action="pick_and_place", target_bin=target,
+                action="pick_and_place",
+                target_bin=target_bin,
                 label=f"Grade {grade} - {text}",
-                detected_labels=top, detected_objects=[],
-                pickup_pose={"x": 0.25, "y": 0.0, "z": 0.15, "roll": 0, "pitch": 0.4, "yaw": 0},
-                drop_joints={"bin_a": [45, -30, 30, 0, 0, 0],
-                             "bin_b": [-45, -30, 30, 0, 0, 0],
-                             "bin_c": [0, -50, 60, 0, 0, 0]}[target],
+                detected_labels=top,
+                detected_objects=[],
+                pickup_pose={"x": 0.35, "y": 0.0, "z": 0.10, "roll": 0, "pitch": 0.4, "yaw": 0},
+                drop_joints=DROP_JOINTS[target_bin],
             )
 
+        # Detect object via background subtraction
         candidates = self._detector.detect(frame.image)
         if not candidates:
             logger.info("No objects detected")
@@ -132,6 +144,8 @@ class RekognitionClassifier:
             )
 
         box = candidates[0]
+
+        # Crop the detected region (with margin) for Rekognition
         crop = self._detector.crop_object(frame.image, box, margin=0.4)
         if crop.shape[0] < 64 or crop.shape[1] < 64:
             return TriageCommand(
@@ -143,35 +157,53 @@ class RekognitionClassifier:
         crop_hires = cv2.resize(crop, (832, 832), interpolation=cv2.INTER_CUBIC)
         names = self._rekognize(crop_hires)
         unique = list(dict.fromkeys(names))
-        logger.info(f"Object @({box.cx:.2f},{box.cy:.2f}) {box.w}x{box.h}: {unique[:6]}")
+        logger.info("Object @(%.2f,%.2f) %dx%d: %s", box.cx, box.cy, box.w, box.h, unique[:6])
 
         if not unique:
             unique = ["unknown"]
-        grade, text, target = self._grade(unique)
+
+        grade, text, target_bin = self._grade(unique)
         top = unique[:5]
 
-        ws_cx = ws_x1 + box.x + box.w / 2
-        ws_cy = ws_y1 + box.y + box.h / 2
-        norm_x = ws_cx / w
-        norm_y = ws_cy / h
+        # ── Coordinate mapping ─────────────────────────────────────────────
+        # box.cx / box.cy are already normalised to [0, 1] relative to the
+        # FULL frame (LocalDetector stores cx = (x + w/2) / frame_w).
+        # Map directly through the linear arm-workspace transform.
+        #
+        # The workspace is roughly the centre 30% of the frame on each axis,
+        # so a centred cup at cx~0.5, cy~0.5 should map to ~(0.35, 0.0) in
+        # arm coordinates — the centre of the reachable workspace.
+        #
+        # arm_x = 0.20 + cx_norm * 0.30   →  range [0.20, 0.50] m
+        # arm_y = -0.15 + cy_norm * 0.30  →  range [-0.15, +0.15] m
+        map_x = 0.20 + box.cx * 0.30
+        map_y = -0.15 + box.cy * 0.30
 
-        map_x = 0.08 + norm_x * 0.34
-        map_y = -0.15 + norm_y * 0.30
-
-        logger.info(f"Pick {top[0]} at ({map_x:.3f}, {map_y:.3f}) -> {target} (Grade {grade})")
+        logger.info(
+            "Pick '%s' at arm (%.3f, %.3f) -> %s (Grade %s)",
+            top[0], map_x, map_y, target_bin, grade,
+        )
 
         return TriageCommand(
-            action="pick_and_place", target_bin=target,
+            action="pick_and_place",
+            target_bin=target_bin,
             label=f"Grade {grade} - {text}",
             detected_labels=top,
             detected_objects=[DetectedObject(
-                name=top[0], confidence=80.0,
-                left=box.x / w, top=box.y / h,
-                width=box.w / w, height=box.h / h,
+                name=top[0],
+                confidence=80.0,
+                left=box.x / w,
+                top=box.y / h,
+                width=box.w / w,
+                height=box.h / h,
             )],
-            pickup_pose={"x": map_x, "y": map_y, "z": 0.12,
-                         "roll": 0, "pitch": 0.4, "yaw": 0},
-            drop_joints={"bin_a": [45, -30, 30, 0, 0, 0],
-                         "bin_b": [-45, -30, 30, 0, 0, 0],
-                         "bin_c": [0, -50, 60, 0, 0, 0]}[target],
+            pickup_pose={
+                "x": map_x,
+                "y": map_y,
+                "z": 0.10,
+                "roll": 0,
+                "pitch": 0.4,
+                "yaw": 0,
+            },
+            drop_joints=DROP_JOINTS[target_bin],
         )

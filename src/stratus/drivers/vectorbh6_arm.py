@@ -27,11 +27,11 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 2.0           # open — 2.0 PROVABLY opened on hardware; 4.0 faults
+    open_pos: float = 4.0           # open wide — 3x the old 2.0. Lift kp so it REACHES it
     close_pos: float = 0.0          # neutral park after drop (safe middle, won't fault)
     grip_pos: float = -0.8          # gentle close within range (-2.5 over-limit FAULTS motor)
-    mit_kp: float = 8.0
-    mit_kd: float = 1.0
+    mit_kp: float = 20.0
+    mit_kd: float = 2.0
     settle_time: float = 2.0        # seconds to wait after sending gripper command
     # ensure_mode uses the EXTENDED CAN protocol (register 10 write). This
     # gripper never acks it ("register 10 write ack not received") and the stray

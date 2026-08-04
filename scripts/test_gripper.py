@@ -54,17 +54,18 @@ def main() -> int:
         print(">> gripper motor registered. Driving cycles — WATCH FINGERS MOVE <<")
 
         for i in range(args.reps):
-            print(f"-> cycle {i + 1}/{args.reps}: OPEN {args.open}")
-            handle._gripper_cmd(args.open)
-            time.sleep(args.wait)
+            print(f"-> cycle {i + 1}/{args.reps}: OPEN {args.open} "
+                  f"(streaming MIT {args.wait}s) — watch fingers", flush=True)
+            handle.gripper_drive(args.open, args.wait, poll_feedback=True)
+            time.sleep(0.2)
 
-            print(f"-> cycle {i + 1}/{args.reps}: GRIP {args.grip}")
-            handle._gripper_cmd(args.grip)
-            time.sleep(args.wait)
+            print(f"-> cycle {i + 1}/{args.reps}: GRIP {args.grip} "
+                  f"(streaming MIT {args.wait}s) — watch fingers", flush=True)
+            handle.gripper_drive(args.grip, args.wait, poll_feedback=True)
+            time.sleep(0.2)
 
-        print(f"-> final: OPEN {args.open} (left holding open)")
-        handle._gripper_cmd(args.open)
-        time.sleep(1.0)
+        print(f"-> final: OPEN {args.open} (streaming 1s, left holding open)", flush=True)
+        handle.gripper_drive(args.open, 1.0)
     finally:
         handle.disconnect()
         print("== done")

@@ -28,6 +28,11 @@ class GripperConfig:
     mit_kp: float = 10.0
     mit_kd: float = 1.0
     settle_time: float = 2.0        # seconds to wait after sending gripper command
+    # ensure_mode uses the EXTENDED CAN protocol (register 10 write). This
+    # gripper never acks it ("register 10 write ack not received") and the stray
+    # frame may corrupt the MIT hold — so it defaults OFF for the gripper. The
+    # DM4310 moves on MIT frames alone once enabled.
+    use_ensure_mode: bool = False
     grip_delta_threshold: float = 0.5  # delta vs target to confirm object held
 
 
@@ -77,7 +82,7 @@ class VectorBH6ArmDriver:
         time.sleep(0.3)
         self._arm.enable()
         time.sleep(0.3)
-        if self._gripper_motor is not None:
+        if self._gripper_motor is not None and self._gripper_cfg.use_ensure_mode:
             try:
                 self._gripper_motor.ensure_mode(Mode.MIT, 1000)
             except Exception:
@@ -159,11 +164,12 @@ class VectorBH6ArmDriver:
                 time.sleep(0.2)
             except Exception:
                 pass
-            try:
-                mot.ensure_mode(Mode.MIT, 1000)
-                time.sleep(0.2)
-            except Exception:
-                pass
+            if cfg.use_ensure_mode:
+                try:
+                    mot.ensure_mode(Mode.MIT, 1000)
+                    time.sleep(0.2)
+                except Exception:
+                    pass
 
             # Quick best-effort feedback poll (logging only — do NOT block on it).
             try:
@@ -207,8 +213,9 @@ class VectorBH6ArmDriver:
                     time.sleep(0.15)
                     self._gripper_motor.enable()
                     time.sleep(0.3)
-                    from motorbridge import Mode
-                    self._gripper_motor.ensure_mode(Mode.MIT, 1000)
+                    if self._gripper_cfg.use_ensure_mode:
+                        from motorbridge import Mode
+                        self._gripper_motor.ensure_mode(Mode.MIT, 1000)
                     time.sleep(0.3)
                 self._gripper_motor.send_mit(self._gripper_hold_target, 0.0,
                                               self._gripper_cfg.mit_kp,
@@ -246,7 +253,8 @@ class VectorBH6ArmDriver:
                     time.sleep(0.15)
                     self._gripper_motor.enable()
                     time.sleep(0.2)
-                    self._gripper_motor.ensure_mode(Mode.MIT, 1000)
+                    if cfg.use_ensure_mode:
+                        self._gripper_motor.ensure_mode(Mode.MIT, 1000)
                     time.sleep(0.2)
                 except Exception as e2:
                     logger.warning("[gripper] fault recovery failed: %s", e2)
@@ -255,7 +263,8 @@ class VectorBH6ArmDriver:
         except Exception as e:
             logger.warning("[gripper] send_mit to %.1f failed (%s) — retrying after enable", pos, e)
             try:
-                self._gripper_motor.ensure_mode(Mode.MIT, 1000)
+                if self._gripper_cfg.use_ensure_mode:
+                    self._gripper_motor.ensure_mode(Mode.MIT, 1000)
                 self._gripper_motor.enable()
                 time.sleep(0.3)
                 self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
@@ -300,15 +309,54 @@ class VectorBH6ArmDriver:
         except Exception as e:
             logger.warning("[gripper] prime enable issue (ignored): %s", e)
         for i in range(reps):
-            self._gripper_cmd(cfg.open_pos)
-            time.sleep(wait)
-            self._gripper_cmd(cfg.grip_pos)
-            time.sleep(wait)
-            logger.info("[gripper] prime cycle %d/%d done", i + 1, reps)
-        self._gripper_cmd(cfg.open_pos)
-        self._gripper_hold_target = cfg.open_pos
+            logger.info("[gripper] prime cycle %d/%d: OPEN %.2f (%.1fs)", i + 1, reps,
+                        cfg.open_pos, wait)
+            self.gripper_drive(cfg.open_pos, wait)
+            logger.info("[gripper] prime cycle %d/%d: GRIP %.2f (%.1fs)", i + 1, reps,
+                        cfg.grip_pos, wait)
+            self.gripper_drive(cfg.grip_pos, wait)
+        self.gripper_drive(cfg.open_pos, 0.8)
         logger.info("[gripper] prime complete, holding open %.2f", cfg.open_pos)
         return True
+
+    def gripper_drive(self, pos: float, duration: float,
+                      poll_feedback: bool = True) -> None:
+        """Continuously send MIT for `duration` seconds.
+
+        A single send_mit only pulses a Damiao motor — actuation requires a
+        stream of MIT frames. This streams at ~20Hz until the time budget
+        elapses, optionally polling feedback for logging.
+        """
+        if self._gripper_motor is None:
+            logger.info("[gripper] no motor — skip drive")
+            return
+        cfg = self._gripper_cfg
+        ctrl = self._arm._ctrl_map.get("damiao")
+        self._gripper_hold_target = pos
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < duration:
+            try:
+                self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
+            except Exception as e:
+                logger.warning("[gripper] drive send failed (%s) — re-enabling", e)
+                try:
+                    self._gripper_motor.enable()
+                    time.sleep(0.1)
+                except Exception:
+                    pass
+            if poll_feedback:
+                try:
+                    self._gripper_motor.request_feedback()
+                    time.sleep(0.02)
+                    if ctrl:
+                        ctrl.poll_feedback_once()
+                    st = self._gripper_motor.get_state()
+                    if st is not None:
+                        logger.info("[gripper] drive pos=%.3f status=%d (target=%.2f)",
+                                    st.pos, st.status_code, pos)
+                except Exception:
+                    pass
+            time.sleep(0.03)
 
     def gripper_open(self) -> bool:
         if self._gripper_motor is None:

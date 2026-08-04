@@ -1,59 +1,75 @@
-#!/usr/bin/env python3
+"""Standalone gripper diagnostic.
+
+Connects the arm (brings up CAN + control loop), then drives the gripper
+open -> grip -> open a few times with direct MIT commands so we can *watch*
+physically whether the fingers move. Run with the same CAN setup as run.py:
+
+    conda run -n rebot python scripts/test_gripper.py        # or
+    python scripts/test_gripper.py
+
+Flags:
+    --open POS     open position (default 2.5)
+    --grip POS     grip position (default -2.5)
+    --reps N       open/grip cycles (default 4)
+    --wait S       seconds between commands (default 0.5)
+"""
 from __future__ import annotations
-import sys, time, logging
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.path.insert(0, str(Path.home() / "reBotArm_control_py"))
-from reBotArm_control_py.actuator import RobotArm as VBArm
-from motorbridge import Mode
-logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-arm = VBArm()
-arm.connect()
-ctrl = arm._ctrl_map["damiao"]
-mot = ctrl.add_damiao_motor(7, 0x17, "4310")
-mot.clear_error()
-time.sleep(0.1)
-mot.write_register_f32(2, 150.0)
-time.sleep(0.1)
-mot.store_parameters()
-mot.enable()
-time.sleep(0.3)
+import argparse
+import sys
+import time
 
-for attempt in range(30):
-    mot.request_feedback()
-    time.sleep(0.02)
-    ctrl.poll_feedback_once()
-    st = mot.get_state()
-    if st and st.status_code == 1:
-        print(f"ENABLED, init pos={st.pos:.4f}")
-        break
-    if st and st.status_code != 0:
-        mot.clear_error()
-        time.sleep(0.1)
-        mot.enable()
-        time.sleep(0.3)
-    time.sleep(0.15)
-else:
-    print("Failed to enable")
-    arm.disconnect()
-    sys.exit(1)
+sys.path.insert(0, "src")
 
-mot.ensure_mode(Mode.MIT, 1000)
-time.sleep(0.3)
-mot.send_mit(0.0, 0.0, 2.0, 0.1, 0.0)
-time.sleep(2.0)
+from stratus.drivers.vectorbh6_arm import GripperConfig, VectorBH6ArmDriver
 
-print("\n=== MIT mode: open / close cycle ===")
-for target, name in [(4.0, "open"), (-5.0, "close"), (4.0, "open"), (-5.0, "close"), (0.0, "center")]:
-    mot.send_mit(target, 0.0, 2.0, 0.1, 0.0)
-    time.sleep(2.0)
-    mot.request_feedback()
-    time.sleep(0.02)
-    ctrl.poll_feedback_once()
-    st = mot.get_state()
-    if st:
-        reached = abs(st.pos - target) < 0.1
-        print(f"  MIT {name:6s} target={target:5.2f} -> pos={st.pos:7.4f} torq={st.torq:7.3f} reached={reached} status={st.status_code}")
 
-arm.disconnect()
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--open", type=float, default=2.5)
+    ap.add_argument("--grip", type=float, default=-2.5)
+    ap.add_argument("--reps", type=int, default=4)
+    ap.add_argument("--wait", type=float, default=0.5)
+    ap.add_argument("--gripper-id", type=int, default=7)
+    ap.add_argument("--dry", action="store_true", help="don't send commands")
+    args = ap.parse_args()
+
+    cfg = GripperConfig(motor_id=args.gripper_id,
+                        open_pos=args.open, grip_pos=args.grip)
+    handle = VectorBH6ArmDriver(gripper=cfg)
+
+    print(f"== Gripper diagnostic: motor {args.gripper_id}  "
+          f"open {args.open}  grip {args.grip}  reps {args.reps}  wait {args.wait}")
+    try:
+        handle.connect()
+    except Exception as e:
+        print(f"!! connect failed: {e}")
+        return 1
+
+    try:
+        mot = handle._gripper_motor
+        if mot is None:
+            print("!! no gripper motor registered — check motor_id / CAN bus")
+            return 1
+        print(">> gripper motor registered. Driving cycles — WATCH FINGERS MOVE <<")
+
+        for i in range(args.reps):
+            print(f"-> cycle {i + 1}/{args.reps}: OPEN {args.open}")
+            handle._gripper_cmd(args.open)
+            time.sleep(args.wait)
+
+            print(f"-> cycle {i + 1}/{args.reps}: GRIP {args.grip}")
+            handle._gripper_cmd(args.grip)
+            time.sleep(args.wait)
+
+        print(f"-> final: OPEN {args.open} (left holding open)")
+        handle._gripper_cmd(args.open)
+        time.sleep(1.0)
+    finally:
+        handle.disconnect()
+        print("== done")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -131,6 +131,13 @@ class VectorBH6ArmDriver:
         self._arm.start_control_loop(self._endpos._loop_cb, rate=10)
         self._endpos._running = True
 
+        # Prime the gripper (open->grip->open a few times) so it is definitely
+        # in MIT mode and moving before the first pick.
+        try:
+            self.prime_gripper()
+        except Exception as e:
+            logger.warning("[connect] gripper prime failed (ignored): %s", e)
+
     def _init_gripper(self) -> None:
         cfg = self._gripper_cfg
         ctrl = self._arm._ctrl_map.get("damiao")
@@ -270,6 +277,37 @@ class VectorBH6ArmDriver:
                                 st.pos, st.status_code, pos)
             except Exception:
                 pass
+        return True
+
+    def prime_gripper(self, reps: int = 4, wait: float = 0.45) -> bool:
+        """Force the gripper through open->close->open at startup so it is
+        unambiguously enabled, in MIT mode, and moving before a pick.
+
+        The feedback pipe on this gripper is flaky (get_state() ~always None),
+        so we cannot confirm motion from feedback — driving it for a couple
+        open/close cycles is the reliable way to prime it into a known state.
+        """
+        if self._gripper_motor is None:
+            logger.info("[gripper] no motor — skip prime")
+            return False
+        cfg = self._gripper_cfg
+        logger.info("[gripper] priming: open %.2f -> grip %.2f x%d",
+                    cfg.open_pos, cfg.grip_pos, reps)
+        try:
+            self._gripper_motor.clear_error()
+            self._gripper_motor.enable()
+            time.sleep(0.2)
+        except Exception as e:
+            logger.warning("[gripper] prime enable issue (ignored): %s", e)
+        for i in range(reps):
+            self._gripper_cmd(cfg.open_pos)
+            time.sleep(wait)
+            self._gripper_cmd(cfg.grip_pos)
+            time.sleep(wait)
+            logger.info("[gripper] prime cycle %d/%d done", i + 1, reps)
+        self._gripper_cmd(cfg.open_pos)
+        self._gripper_hold_target = cfg.open_pos
+        logger.info("[gripper] prime complete, holding open %.2f", cfg.open_pos)
         return True
 
     def gripper_open(self) -> bool:

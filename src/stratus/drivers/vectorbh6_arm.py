@@ -90,14 +90,42 @@ class VectorBH6ArmDriver:
             except Exception:
                 pass
         self._arm._request_and_poll()
+
+        # Check each joint and attempt fault recovery for any that failed to enable
         for jc in self._arm._joints:
+            mot = self._arm._motor_map.get(jc.name)
+            if mot is None:
+                continue
             try:
-                self._arm._motor_map[jc.name].ensure_mode(Mode.MIT, 1000)
+                mot.ensure_mode(Mode.MIT, 1000)
             except Exception:
                 pass
-            st = self._arm._motor_map[jc.name].get_state()
+            st = mot.get_state()
             if st is not None:
                 logger.info("Joint %s: status=%d pos=%.3f", jc.name, st.status_code, st.pos)
+                # status_code=12 means fault — attempt clear+re-enable
+                if st.status_code not in (0, 1):
+                    logger.warning("[connect] %s faulted (status=%d) — clearing error",
+                                   jc.name, st.status_code)
+                    for _ in range(3):
+                        try:
+                            mot.clear_error()
+                            time.sleep(0.3)
+                            mot.enable()
+                            time.sleep(0.3)
+                            mot.ensure_mode(Mode.MIT, 1000)
+                            time.sleep(0.2)
+                        except Exception:
+                            pass
+                        mot.request_feedback()
+                        time.sleep(0.05)
+                        st2 = mot.get_state()
+                        if st2 is not None and st2.status_code == 1:
+                            logger.info("[connect] %s recovered (status=%d)", jc.name, st2.status_code)
+                            break
+                        logger.warning("[connect] %s still faulted (status=%s)",
+                                       jc.name, st2.status_code if st2 else 'None')
+
         self._endpos = ArmEndPos(self._arm)
         self._mit_kp = np.array([100.0, 100.0, 100.0, 18.0, 18.0, 18.0], dtype=np.float64)
         self._mit_kd = np.array([8.0, 8.0, 8.0, 2.0, 2.0, 2.0], dtype=np.float64)
@@ -360,7 +388,7 @@ class VectorBH6ArmDriver:
         if scan_joints is not None:
             self.set_scan_joints(scan_joints)
         target = np.array(self._scan_joints, dtype=np.float64)
-        logger.info("[scan] BEFORE move — current joints: %s", 
+        logger.info("[scan] BEFORE move — current joints: %s",
                     np.round(self._arm.get_state()[0], 3))
         logger.info("[scan] TARGET scan pose: %s (%.1fs)", np.round(target, 3), duration)
         logger.info("[scan] idx0(base)=%+.3f idx4(j5)=%+.3f idx5(j6/wrist)=%+.3f",
@@ -368,6 +396,18 @@ class VectorBH6ArmDriver:
         self.move_to_joints(target, duration=duration, frame_cb=frame_cb)
         final_q, _, _ = self._arm.get_state()
         logger.info("[scan] AFTER move — final joints: %s", np.round(final_q, 3))
+
+        # Check if any joint failed to reach target (e.g. still faulted)
+        errs = np.abs(final_q - target)
+        bad = np.where(errs > 0.15)[0]
+        if len(bad) > 0:
+            logger.warning("[scan] joints %s did not reach target (errors: %s) — retrying",
+                           bad, np.round(errs[bad], 3))
+            # Give them a second attempt with more time
+            self.move_to_joints(target, duration=duration + 2.0, frame_cb=frame_cb)
+            final_q, _, _ = self._arm.get_state()
+            logger.info("[scan] retry AFTER move — final joints: %s", np.round(final_q, 3))
+
         logger.info("[scan] joint[0] error: %+.4f (should be ~0)", final_q[0])
 
     def move_to_pose(self, x: float, y: float, z: float,

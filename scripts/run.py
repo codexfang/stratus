@@ -187,6 +187,10 @@ def main():
     # ── Connect everything ────────────────────────────────────────────────
     print("Connecting arm...")
     if arm:
+        # Apply CLI scan-joints override before connect so _safe_return_home
+        # uses the same pose from the very first move.
+        if args.scan_joints:
+            arm.set_scan_joints(args.scan_joints)
         arm.connect()
         print("Arm connected")
 

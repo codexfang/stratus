@@ -31,12 +31,14 @@ class GripperConfig:
     grip_delta_threshold: float = 0.8  # min pos delta vs target to confirm object held
 
 
-# Joint-space scan pose: arm extended upward so top-mounted camera
-# looks down at the full workspace in front of the base.
-# Units: radians.  Tune joint[1] (shoulder pitch) to get the right tilt.
-# Positive joint[1] raises the forearm; joint[2] (elbow) controls reach.
-# These defaults work for a ~60 cm arm with camera on the wrist/forearm.
-DEFAULT_SCAN_JOINTS = [0.0, -0.6, -0.8, 0.0, 1.4, 0.0]
+# Scan pose joint angles (radians).
+# Joint layout: [base_rotation, shoulder, elbow, forearm_roll, wrist_pitch, wrist_roll]
+#
+# Goal: arm points straight up/forward so the top-mounted camera looks down
+# at the workspace in front of the base.  Keep joint[0]=0 (no side rotation),
+# raise shoulder (negative = up), extend elbow slightly forward, tilt wrist
+# (joint[4]) forward a little so camera faces down-forward.
+DEFAULT_SCAN_JOINTS = [0.0, -0.5, -0.6, 0.0, 0.3, 0.0]
 
 
 class VectorBH6ArmDriver:
@@ -46,6 +48,17 @@ class VectorBH6ArmDriver:
         self._endpos: ArmEndPos | None = None
         self._gripper_cfg = gripper if gripper is not None else GripperConfig()
         self._gripper_motor = None
+        # Scan pose used both at startup and when returning home after a pick.
+        # Set via move_to_scan_pose(scan_joints=...) before connect() if needed,
+        # or override with set_scan_joints() after construction.
+        self._scan_joints: list[float] = list(DEFAULT_SCAN_JOINTS)
+
+    def set_scan_joints(self, joints: list[float]) -> None:
+        """Override the scan pose used at startup and after each pick."""
+        if len(joints) != 6:
+            raise ValueError(f"scan_joints must have 6 values, got {len(joints)}")
+        self._scan_joints = list(joints)
+        logger.info("Scan joints updated: %s", np.round(self._scan_joints, 3))
 
     def connect(self) -> None:
         from motorbridge import Mode
@@ -322,13 +335,13 @@ class VectorBH6ArmDriver:
         full workspace below/in front of it.
 
         scan_joints: 6-element list of target joint angles in radians.
-                     Defaults to DEFAULT_SCAN_JOINTS if None.
+                     If provided, also saves them as the new default so
+                     _safe_return_home uses the same pose.
         duration:    time to complete the move (seconds).
         """
-        target = np.array(
-            scan_joints if scan_joints is not None else DEFAULT_SCAN_JOINTS,
-            dtype=np.float64,
-        )
+        if scan_joints is not None:
+            self.set_scan_joints(scan_joints)
+        target = np.array(self._scan_joints, dtype=np.float64)
         logger.info("[scan] moving to scan pose %s (%.1fs)", np.round(target, 3), duration)
         self.move_to_joints(target, duration=duration, frame_cb=frame_cb)
         logger.info("[scan] scan pose reached")
@@ -541,8 +554,9 @@ class VectorBH6ArmDriver:
             logger.info("[triage] elbow clearance %s", np.round(clearance, 3))
             self._slew_mit(clearance, duration=2.5, frame_cb=frame_cb)
 
-        # Slew to scan pose
-        scan_q = np.array(DEFAULT_SCAN_JOINTS, dtype=np.float64)
+        # Slew to scan pose — use the instance's stored scan joints so
+        # this always matches whatever was set at startup or via CLI.
+        scan_q = np.array(self._scan_joints, dtype=np.float64)
         self._slew_mit(scan_q, duration=5.0, frame_cb=frame_cb)
         self._endpos._q_target[:] = scan_q
         self._arm.start_control_loop(self._endpos._loop_cb, rate=10)

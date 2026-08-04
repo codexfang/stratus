@@ -24,37 +24,34 @@ class GripperConfig:
     model: str = "4310"
     open_pos: float = 4.0           # wide open — confirmed working range
     close_pos: float = -5.0         # fully closed (used after drop to reset)
-    grip_pos: float = -2.0          # gentle hold — stops when object blocks movement
+    grip_pos: float = -2.0          # gentle hold — motor stalls when object blocks it
     mit_kp: float = 10.0
     mit_kd: float = 1.0
     settle_time: float = 2.0        # seconds to wait after sending gripper command
-    grip_delta_threshold: float = 0.5  # min pos delta vs target to confirm object held
+    grip_delta_threshold: float = 0.5  # delta vs target to confirm object held
 
 
 # Scan pose joint angles (radians).
 # Verified joint mapping from live tests:
 #   idx0 = base rotation  (0.0 = straight forward — confirmed)
-#   idx1 = shoulder       (negative = arm goes UP and extends)
-#   idx2 = elbow          (negative = extends forward; positive fights shoulder at this angle)
+#   idx1 = shoulder       (negative = arm raises UP)
+#   idx2 = elbow          (negative = arm leans forward; faults at large values)
 #   idx3 = forearm roll   (keep 0)
 #   idx4 = unknown        (keep 0)
-#   idx5 = wrist roll     (keep 0 — any value here spins the gripper)
+#   idx5 = wrist roll     (keep 0 — any nonzero value spins the gripper)
 #
-# History:
-#   [-0.5, -0.6, 0, 0, 0] → arm extended UP and forward (good extension)
-#   [-0.5, +0.5, 0, 0, 0] → camera looked DOWN (good tilt) but no extension
-#   elbow idx2=+0.5 hits joint limit when shoulder is raised → use negative
+# Goal: ENTIRE arm rises straight up so camera on top sees full workspace.
+# idx1 very negative = tall vertical pose.
+# Small negative idx2 adds a slight forward lean so camera tilts down at table.
+# idx2 limited to -0.3 to avoid triggering the joint3 fault seen in testing.
 #
-# Solution: raise shoulder high (idx1=-0.9), elbow negative to extend forward
-# This extends the arm UP and forward. Camera on top naturally looks slightly
-# down at the table from this elevated angle.
 #   idx0 =  0.0: base faces FORWARD
-#   idx1 = -0.9: shoulder raises arm UP (more than before)
-#   idx2 = -0.6: elbow extends arm forward (negative works at this angle)
+#   idx1 = -1.2: shoulder raises arm HIGH (entire arm goes up)
+#   idx2 = -0.3: slight forward lean (camera tilts down toward table)
 #   idx3 =  0.0: no forearm roll
 #   idx4 =  0.0: neutral
 #   idx5 =  0.0: NO wrist roll
-DEFAULT_SCAN_JOINTS = [0.0, -0.9, -0.6, 0.0, 0.0, 0.0]
+DEFAULT_SCAN_JOINTS = [0.0, -1.2, -0.3, 0.0, 0.0, 0.0]
 
 
 class VectorBH6ArmDriver:

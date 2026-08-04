@@ -39,12 +39,12 @@ def main():
                         help="Gripper open position in motor radians (default: 4.0)")
     parser.add_argument("--gripper-close", type=float, default=-5.0,
                         help="Gripper fully closed position (default: -5.0)")
-    parser.add_argument("--gripper-grip", type=float, default=-3.0,
-                        help="Gripper grip target — stopped by object before this (default: -3.0)")
+    parser.add_argument("--gripper-grip", type=float, default=-2.0,
+                        help="Gripper grip target — stopped by object before this (default: -2.0)")
     parser.add_argument("--gripper-kp", type=float, default=10.0,
                         help="Gripper MIT kp (default: 10.0)")
-    parser.add_argument("--gripper-delta", type=float, default=0.8,
-                        help="Min position delta to confirm object in gripper (default: 0.8)")
+    parser.add_argument("--gripper-delta", type=float, default=0.5,
+                        help="Min position delta to confirm object in gripper (default: 0.5)")
     parser.add_argument("--settle-time", type=float, default=2.0,
                         help="Gripper settle time in seconds (default: 2.0)")
 

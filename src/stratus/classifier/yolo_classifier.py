@@ -51,11 +51,19 @@ CLASSES = [
 ]
 
 # Drop joint angles (degrees) for each bin.
-# These are the joint-space targets the arm slews to when placing into a bin.
+# IMPORTANT: joint3 (idx2) faults in testing — keep idx2=0 for all bins.
+# Use only idx0 (base rotation) to swing left/right to each bin,
+# and idx1 (shoulder) to lower the arm down to drop height.
+# idx2=0 avoids the motor fault. idx3,4,5 stay at 0.
+#
+# Bin layout (facing forward from arm base):
+#   A = refurbishable items  → swing RIGHT  (idx0 positive)
+#   B = recyclable/scrap     → swing LEFT   (idx0 negative)
+#   C = books/media          → straight ahead, lowered (idx0=0)
 DROP_JOINTS = {
-    "A": [60, -10, 40, 0, 10, 0],
-    "B": [-60, -10, 40, 0, 10, 0],
-    "C": [10, -10, 70, 0, 10, 0],
+    "A": [45,  -20, 0, 0, 0, 0],   # swing 45° right, shoulder lowers to drop height
+    "B": [-45, -20, 0, 0, 0, 0],   # swing 45° left
+    "C": [0,   -20, 0, 0, 0, 0],   # straight ahead, lowered
 }
 
 # Which bin each detected class maps to.

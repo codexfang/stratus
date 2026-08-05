@@ -35,14 +35,14 @@ def main():
                         help="Run without physical arm (preview only)")
     parser.add_argument("--gripper-id", type=int, default=7,
                         help="Damiao gripper motor CAN ID (default: 7)")
-    parser.add_argument("--gripper-open", type=float, default=3.6,
-                        help="Gripper open position (default 3.6 — real hardware max; 4.0+ faults the motor). Auto-clamped");
+    parser.add_argument("--gripper-open", type=float, default=9.0,
+                        help="Gripper open position (default 9.0 — ~2.5x wider; 4310 MIT range is +12.5)")
     parser.add_argument("--gripper-close", type=float, default=0.0,
                         help="Gripper neutral park position after drop (default: 0.0)")
     parser.add_argument("--gripper-grip", type=float, default=-0.8,
                         help="Gripper grip target — gentle, stays in range (default: -0.8)")
-    parser.add_argument("--gripper-kp", type=float, default=8.0,
-                        help="Gripper MIT kp (default: 8.0 — vendor-tuned, proven to open 2.0)")
+    parser.add_argument("--gripper-kp", type=float, default=12.0,
+                        help="Gripper MIT kp (default 12.0 — proven 4310 wrists run 18)")
     parser.add_argument("--gripper-delta", type=float, default=0.5,
                         help="Min position delta to confirm object in gripper (default: 0.5)")
     parser.add_argument("--settle-time", type=float, default=0.4,

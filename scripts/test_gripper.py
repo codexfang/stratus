@@ -71,8 +71,8 @@ def probe(handle) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--open", type=float, default=3.6,
-                    help="open position (default 3.6 — real max; 4.0+ faults)")
+    ap.add_argument("--open", type=float, default=9.0,
+                    help="open position (default 9.0 — ~2.5x wider than 3.6)")
     ap.add_argument("--grip", type=float, default=-0.8)
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--dur", type=float, default=2.0)

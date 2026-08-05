@@ -27,12 +27,12 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 3.6           # max width that PHYSICALLY opens. Measured: 2.0 & 3.0 open, 4.0+ FAULTS the motor (red LED, ignores everything). 6.0 = fingers never move. 3.6 sits just under the limit
-    open_limit: float = 3.85        # hard clamp: any gripper command above this gets clamped so it can never over-limit-fault again
+    open_pos: float = 9.0           # ~2.5x wider than 3.6: DM4310 MIT range is ±12.5 rad; 3.6 was only ~0.57 rev (a few mm of finger travel). 9.0 rad ≈ 1.4 rev — fingers sweep 2.5x further
+    open_limit: float = 12.0        # hard clamp just inside the ±12.5 rad model limit — never over-limit-faults
     close_pos: float = 0.0          # neutral park after drop (safe middle, won't fault)
     grip_pos: float = -0.8          # gentle close within range (-2.5 over-limit FAULTS motor)
-    mit_kp: float = 8.0             # proven gentle gains — rests on the stop without slamming
-    mit_kd: float = 1.0
+    mit_kp: float = 12.0            # stiffer than 8: the proven 4310 wrist joints run kp 18/kd 2; 12 drives the big travel without slamming
+    mit_kd: float = 1.5
     settle_time: float = 0.4        # thread holds the position continuously — no need to idle 2s
     # ensure_mode uses the EXTENDED CAN protocol (register 10 write). This
     # gripper never acks it ("register 10 write ack not received") and the stray

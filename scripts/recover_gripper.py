@@ -27,7 +27,7 @@ from stratus.drivers.vectorbh6_arm import GripperConfig, VectorBH6ArmDriver
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--gripper-id", type=int, default=7)
-    ap.add_argument("--max", type=float, default=12.0, help="open-side walk target (12.0 inside 4310 MIT range; watch where fingers stop)")
+    ap.add_argument("--max", type=float, default=2.0, help="open-side walk target (2.0 proven; above faults)")
     ap.add_argument("--min", type=float, default=-0.8, help="close-side walk target")
     ap.add_argument("--step", type=float, default=0.1)
     ap.add_argument("--step-dur", type=float, default=0.3)
@@ -39,8 +39,10 @@ def main() -> int:
     handle = VectorBH6ArmDriver(gripper=cfg)
 
     print("==", "GRIPPER RECOVERY", "==")
-    print("POWER-CYCLED the robot since last run? "
-          "If not, unplug the USB-CAN dongle 5s, replug, retry this.")
+    print("POWER-CYCLE REQUIRED FIRST: unplug the ARM'S 24V POWER SUPPLY")
+    print("(the AC/DC adapter feeding the arm) for 5 FULL seconds, then replug.")
+    print("Unplugging just the USB dongle does NOT clear a motor fault — the")
+    print("motor only resets when its POWER drops. Red LED must go off.")
     try:
         handle.connect()
     except Exception as e:

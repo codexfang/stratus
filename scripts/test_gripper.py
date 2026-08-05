@@ -71,8 +71,8 @@ def probe(handle) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--open", type=float, default=9.0,
-                    help="open position (default 9.0 — ~2.5x wider than 3.6)")
+    ap.add_argument("--open", type=float, default=2.0,
+                    help="open position (default 2.0 — PROVEN; >2.0 over-limit-FAULTS motor)")
     ap.add_argument("--grip", type=float, default=-0.8)
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--dur", type=float, default=2.0)
@@ -81,14 +81,25 @@ def main() -> int:
     ap.add_argument("--ramp", nargs=2, type=float, metavar=("MIN", "MAX"))
     ap.add_argument("--ramp-steps", type=int, default=90)
     ap.add_argument("--ramp-dt", type=float, default=0.06)
+    ap.add_argument("--torque", type=float, default=0.8,
+                    help="torque-mode open/close with kp=0 (official DM_Gripper: tau=+/-0.8 Nm, no position limit)")
+    ap.add_argument("--force", type=float, default=0.0,
+                    help="force-open mode: ramp torque 0.5 -> VALUE (Nm) on the OPEN side only, past the position limit (default 0 = off)")
     args = ap.parse_args()
 
     cfg = GripperConfig(motor_id=args.gripper_id,
                         open_pos=args.open, grip_pos=args.grip)
     handle = VectorBH6ArmDriver(gripper=cfg)
 
-    mode = f"ramp {args.ramp[0]}->{args.ramp[1]}" if args.ramp else (
-        f"cycles open {args.open} / grip {args.grip} x{args.reps}")
+    use_torque = args.torque > 0 and args.force <= 0
+    if args.force > 0:
+        mode = f"force-open torque ramp 0.5 -> {args.force} Nm"
+    elif use_torque:
+        mode = f"torque open/close +-{args.torque} Nm"
+    elif args.ramp:
+        mode = f"ramp {args.ramp[0]}->{args.ramp[1]}"
+    else:
+        mode = f"cycles open {args.open} / grip {args.grip} x{args.reps}"
     print(f"== Gripper diagnostic: motor {args.gripper_id}  mode: {mode}")
     try:
         handle.connect()
@@ -101,26 +112,95 @@ def main() -> int:
             probe(handle)
         print(">> WATCH FINGERS during the streams <<")
 
-        if args.ramp:
+        def heal(pos: float) -> None:
+            mot = handle._gripper_motor
+            for _ in range(2):
+                try:
+                    mot.clear_error()
+                    time.sleep(0.1)
+                    mot.enable()
+                    time.sleep(0.1)
+                except Exception:
+                    pass
+            handle._gripper_limp_active = False
+            handle._gripper_hold_target = pos
+
+        if args.force > 0:
+            # FORCE-OPEN: ramp torque 0.5 -> args.force on the open side only.
+            # Torque frames carry no position target, so no over-limit fault can
+            # trip — it pushes the fingers all the way to the mechanical stop.
+            print(f">> FORCE OPEN: torque ramp 0.5 -> {args.force} Nm over "
+                  f"{int(args.force * 4)}s, open side only", flush=True)
+            for _ in range(3):
+                heal(0.0)
+            t_start = time.monotonic()
+            dur = float(args.force) * 4.0
+            while time.monotonic() - t_start < dur:
+                frac = min((time.monotonic() - t_start) / dur, 1.0)
+                tau = 0.5 + frac * (args.force - 0.5)
+                try:
+                    handle._gripper_motor.send_mit(0.0, 0.0, 0.0, 1.0, tau)
+                except Exception:
+                    pass
+                time.sleep(0.02)
+            print(f">> force done at {args.force} Nm — holding open 3s", flush=True)
+            handle._gripper_motor.send_mit(0.0, 0.0, 0.0, 1.0, args.force)
+            time.sleep(3.0)
+            handle._gripper_motor.send_mit(0.0, 0.0, 0.0, 1.0, 0.0)
+        elif use_torque:
+            def torque_stream(tau: float, dur: float) -> None:
+                mot = handle._gripper_motor
+                handle._gripper_hold_target = None
+                handle._gripper_limp_active = False
+                t_end = time.monotonic() + dur
+                while time.monotonic() < t_end:
+                    try:
+                        mot.send_mit(0.0, 0.0, 0.0, 1.0, tau)
+                    except Exception:
+                        pass
+                    time.sleep(0.02)
+                mot.send_mit(0.0, 0.0, 0.0, 1.0, 0.0)
+
+            for i in range(args.reps):
+                print(f"-> torque cycle {i + 1}/{args.reps}: OPEN +{args.torque} Nm "
+                      f"({args.dur}s) — fingers should push to the stop", flush=True)
+                heal(0.0)
+                torque_stream(+args.torque, args.dur)
+                time.sleep(0.2)
+                print(f"-> torque cycle {i + 1}/{args.reps}: CLOSE -{args.torque} Nm "
+                      f"({args.dur}s)", flush=True)
+                heal(0.0)
+                torque_stream(-args.torque, args.dur)
+                time.sleep(0.2)
+            print(f"-> final: OPEN +{args.torque} Nm (2s, left held open)", flush=True)
+            heal(0.0)
+            torque_stream(+args.torque, 2.0)
+        elif args.ramp:
             lo, hi = sorted(args.ramp)
             step = (hi - lo) / args.ramp_steps
             print(f">> RAMP {lo:.2f} -> {hi:.2f} in {args.ramp_steps} steps "
                   f"({args.ramp_dt}s each)")
             for i in range(args.ramp_steps + 1):
-                handle.gripper_drive(lo + step * i, args.ramp_dt, poll_feedback=True)
+                pos = lo + step * i
+                heal(pos)
+                handle.gripper_drive(pos, args.ramp_dt, poll_feedback=True)
             print(">> ramp done; holding at", hi)
+            heal(hi)
             handle.gripper_drive(hi, 1.5)
         else:
             for i in range(args.reps):
                 print(f"-> cycle {i + 1}/{args.reps}: OPEN {args.open} "
                       f"(streaming {args.dur}s) — watch fingers", flush=True)
+                heal(args.open)
                 handle.gripper_drive(args.open, args.dur, poll_feedback=True)
                 time.sleep(0.2)
                 print(f"-> cycle {i + 1}/{args.reps}: GRIP {args.grip} "
                       f"(streaming {args.dur}s) — watch fingers", flush=True)
+                heal(args.grip)
                 handle.gripper_drive(args.grip, args.dur, poll_feedback=True)
                 time.sleep(0.2)
             print(f"-> final: OPEN {args.open} (streaming 1s, left holding open)", flush=True)
+            heal(args.open)
             handle.gripper_drive(args.open, 1.0)
     finally:
         handle.disconnect()

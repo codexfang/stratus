@@ -35,18 +35,20 @@ def main():
                         help="Run without physical arm (preview only)")
     parser.add_argument("--gripper-id", type=int, default=7,
                         help="Damiao gripper motor CAN ID (default: 7)")
-    parser.add_argument("--gripper-open", type=float, default=9.0,
-                        help="Gripper open position (default 9.0 — ~2.5x wider; 4310 MIT range is +12.5)")
+    parser.add_argument("--gripper-open", type=float, default=2.0,
+                        help="Gripper open position (default: 2.0 — PROVEN on hardware; >2.0 over-limit-FAULTS motor)")
     parser.add_argument("--gripper-close", type=float, default=0.0,
                         help="Gripper neutral park position after drop (default: 0.0)")
     parser.add_argument("--gripper-grip", type=float, default=-0.8,
                         help="Gripper grip target — gentle, stays in range (default: -0.8)")
-    parser.add_argument("--gripper-kp", type=float, default=12.0,
-                        help="Gripper MIT kp (default 12.0 — proven 4310 wrists run 18)")
+    parser.add_argument("--gripper-tight", type=float, default=32.0,
+                        help="Gripper 2nd-stage pinch stiffness kp, same −0.8 position (default: 32 — firmer hold, no deeper travel)")
+    parser.add_argument("--gripper-kp", type=float, default=8.0,
+                        help="Gripper MIT kp (default: 8.0 — vendor-tuned, proven to open 2.0)")
     parser.add_argument("--gripper-delta", type=float, default=0.5,
                         help="Min position delta to confirm object in gripper (default: 0.5)")
-    parser.add_argument("--settle-time", type=float, default=0.4,
-                        help="Gripper settle time in seconds (default: 0.4 — thread holds position, no dead time)")
+    parser.add_argument("--settle-time", type=float, default=2.0,
+                        help="Gripper settle time in seconds (default: 2.0)")
 
     # YOLO / classifier
     parser.add_argument("--model", default="",
@@ -99,6 +101,7 @@ def main():
         open_pos=args.gripper_open,
         close_pos=args.gripper_close,
         grip_pos=args.gripper_grip,
+        grip_tight_kp=args.gripper_tight,
         mit_kp=args.gripper_kp,
         grip_delta_threshold=args.gripper_delta,
         settle_time=args.settle_time,
@@ -106,7 +109,8 @@ def main():
     print(
         f"Gripper: motor ID {args.gripper_id}, "
         f"open={args.gripper_open} close={args.gripper_close} "
-        f"grip={args.gripper_grip} kp={args.gripper_kp} "
+        f"grip={args.gripper_grip} tight={args.gripper_tight} "
+        f"kp={args.gripper_kp} "
         f"delta={args.gripper_delta} settle={args.settle_time}s"
     )
 

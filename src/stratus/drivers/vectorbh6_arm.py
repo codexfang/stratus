@@ -16,7 +16,6 @@ import numpy.typing as npt
 sys.path.insert(0, str(Path.home() / "reBotArm_control_py"))
 from reBotArm_control_py.actuator import RobotArm as VBArm
 from reBotArm_control_py.controllers import ArmEndPos
-from motorbridge import Mode
 
 from stratus.core.arm_driver import ArmDriver, ArmObservation, TriageCommand
 
@@ -28,20 +27,17 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 9.0           # ~2.5x wider than 3.6: DM4310 MIT range is ±12.5 rad; 3.6 was only ~0.57 rev (a few mm of finger travel). 9.0 rad ≈ 1.4 rev — fingers sweep 2.5x further
-    open_limit: float = 12.0        # hard clamp just inside the ±12.5 rad model limit — never over-limit-faults
+    open_pos: float = 2.0           # PROVEN on hardware (test physically opened). Larger values (4.0/6.0) slam the stop and over-limit-FAULT the motor (silently ignores commands until power cycle)
     close_pos: float = 0.0          # neutral park after drop (safe middle, won't fault)
     grip_pos: float = -0.8          # gentle close within range (-2.5 over-limit FAULTS motor)
-    mit_kp: float = 12.0            # stiffer than 8: the proven 4310 wrist joints run kp 18/kd 2; 12 drives the big travel without slamming
-    mit_kd: float = 1.5
-    settle_time: float = 0.4        # thread holds the position continuously — no need to idle 2s
+    grip_tight_kp: float = 32.0     # 2nd-stage pinch: SAME position, stiffer kp — holds object firmly without deeper travel (deeper targets over-limit-fault the motor)
+    mit_kp: float = 8.0             # PROVEN combo with open 2.0 (vendor-tuned)
+    mit_kd: float = 1.0
+    settle_time: float = 2.0        # seconds to wait after sending gripper command
     # ensure_mode uses the EXTENDED CAN protocol (register 10 write). This
     # gripper never acks it ("register 10 write ack not received") and the stray
     # frame may corrupt the MIT hold — so it defaults OFF for the gripper. The
     # DM4310 moves on MIT frames alone once enabled.
-    # ensure_mode is OFF — proven harmful on this motor: it writes CTRL_MODE
-    # (register 10) and the motor then ignores MIT frames entirely (no motion
-    # at all), verified on hardware. Do NOT re-enable.
     use_ensure_mode: bool = False
     grip_delta_threshold: float = 0.5  # delta vs target to confirm object held
 
@@ -306,7 +302,6 @@ class VectorBH6ArmDriver:
                 pass
 
             self._gripper_motor = mot
-            self._widen_gripper_pmax()
             logger.info("Gripper ID %d ready in MIT mode (timeout=60s)", cfg.motor_id)
         except Exception as e:
             logger.warning("Gripper init failed: %s", e)
@@ -320,25 +315,20 @@ class VectorBH6ArmDriver:
                       kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
 
     def _gripper_loop(self) -> None:
-        """Continuous MIT stream for the gripper at ~50Hz — PURE SEND.
+        """Continuous MIT stream for the gripper at ~50Hz.
 
-        Feedback on this motor NEVER arrives (it does not ack the register
-        protocol), yet request_feedback()+poll_feedback_once() sit on the
-        shared arm serial. pöll waits for a response that never comes and can
-        block on a bus timeout, starving the MIT stream EXACTLY while the arm
-        is slewing — which made fingers open "just a little" in the pipeline
-        but fully when the arm was idle. So: no request, no poll — just a
-        fixed-rate position stream. The motor moves on MIT frames alone.
+        Uses the SAME proven cadence as the working arm joints / vendor
+        gripper: after every MIT frame request feedback then drain the bus.
+        This is the exact loop config that PHYSICALLY OPENED the gripper in
+        test_gripper.py, so it stays as-is.
         """
         cfg = self._gripper_cfg
+        ctrl = self._arm._ctrl_map.get("damiao")
         hard_error_streak = 0
         while not self._gripper_stop:
             mot = self._gripper_motor
             target = self._gripper_hold_target
             if mot is not None and not self._gripper_limp_active and target is not None:
-                # Hard clamp (see _gripper_cmd): >open_limit over-limit-FAULTS
-                # the motor, which then silently ignores every frame.
-                target = min(max(target, -2.4), cfg.open_limit)
                 try:
                     mot.send_mit(target, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
                     hard_error_streak = 0
@@ -354,6 +344,15 @@ class VectorBH6ArmDriver:
                         hard_error_streak += 1
                     logger.warning("[gripper] loop send failed (%s) streak=%d",
                                    e, hard_error_streak)
+                try:
+                    mot.request_feedback()
+                except Exception:
+                    pass
+                try:
+                    if ctrl:
+                        ctrl.poll_feedback_once()
+                except Exception:
+                    pass
                 time.sleep(0.02)
             elif mot is not None and self._gripper_limp_active:
                 # Zero-stiffness stream: motor stays powered but applies no
@@ -380,18 +379,12 @@ class VectorBH6ArmDriver:
             self._gripper_thread.join(timeout=1.0)
             self._gripper_thread = None
 
-    def _gripper_cmd(self, pos: float) -> bool:
+    def _gripper_cmd(self, pos: float, kp: float | None = None) -> bool:
         if self._gripper_motor is None:
             return False
         cfg = self._gripper_cfg
-
-        # Hard safety clamp: commanding past the open-side limit (which sits
-        # between 3.0 working and 4.0 faulting) over-limit-FAULTS the motor
-        # and it then silently ignores EVERYTHING. Never allow it again.
-        if pos > cfg.open_limit or pos < -2.4:
-            logger.warning("[gripper] target %.2f outside safe range [-2.4, %.2f] "
-                           "— clamping (prevents over-limit fault)", pos, cfg.open_limit)
-            pos = float(np.clip(pos, -2.4, cfg.open_limit))
+        ctrl = self._arm._ctrl_map.get("damiao")
+        kp = cfg.mit_kp if kp is None else kp
 
         # Self-healing fault recovery BEFORE every command. An over-limit fault
         # (e.g. from a bad earlier run commanding 4.0/6.0) makes the motor
@@ -400,9 +393,9 @@ class VectorBH6ArmDriver:
         for _ in range(2):
             try:
                 self._gripper_motor.clear_error()
-                time.sleep(0.1)
+                time.sleep(0.15)
                 self._gripper_motor.enable()
-                time.sleep(0.1)
+                time.sleep(0.15)
             except Exception:
                 pass
 
@@ -411,13 +404,13 @@ class VectorBH6ArmDriver:
         # this gripper is almost always absent, so a status-based recovery is
         # useless: just send, and re-enable only if the send itself throws.
         try:
-            self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
+            self._gripper_motor.send_mit(pos, 0.0, kp, cfg.mit_kd, 0.0)
         except Exception as e:
             logger.warning("[gripper] send_mit to %.1f failed (%s) — retrying after enable", pos, e)
             try:
                 self._gripper_motor.enable()
                 time.sleep(0.2)
-                self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
+                self._gripper_motor.send_mit(pos, 0.0, kp, cfg.mit_kd, 0.0)
             except Exception as e2:
                 logger.warning("[gripper] resend to %.1f failed: %s", pos, e2)
                 return False
@@ -428,34 +421,21 @@ class VectorBH6ArmDriver:
         for _ in range(int(cfg.settle_time / 0.2)):
             time.sleep(0.2)
             try:
-                self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
+                self._gripper_motor.send_mit(pos, 0.0, kp, cfg.mit_kd, 0.0)
+            except Exception:
+                pass
+            try:
+                self._gripper_motor.request_feedback()
+                time.sleep(0.01)
+                if ctrl:
+                    ctrl.poll_feedback_once()
+                st = self._gripper_motor.get_state()
+                if st is not None:
+                    logger.info("[gripper] pos=%.3f status=%d (target=%.1f)",
+                                st.pos, st.status_code, pos)
             except Exception:
                 pass
         return True
-
-    def _widen_gripper_pmax(self) -> None:
-        """Try to raise the motor's stored MIT position mapping range (PMAX).
-
-        Damiao MIT frames are scaled against the device's PMAX register (21).
-        If the stored PMAX on THIS gripper is small (observed symptom: fingers
-        travel only a few mm no matter if we command 2.0, 3.6 or 9.0), every
-        command beyond it is clamped in firmware. Writing the 4310 catalog
-        values (PMAX 12.5 / VMAX 30 / TMAX 10) widens the mapping.
-
-        NOTE: this gripper never acks register protocol (sends run ok on MIT
-        only), so write_register_f32 raises ack timeout every time. Damiao
-        usually still EXECUTES the write on the bus even when the response is
-        missed, so we fire it once per register and hope for the best.
-        """
-        mot = self._gripper_motor
-        if mot is None:
-            return
-        for rid, val in ((21, 12.5), (22, 30.0), (23, 10.0)):
-            try:
-                mot.write_register_f32(rid, val)
-                time.sleep(0.05)
-            except Exception as e:
-                logger.debug("[gripper] write reg %d=%.1f no ack (%s)", rid, val, e)
 
     def prime_gripper(self, reps: int = 4, wait: float = 0.45) -> bool:
         """Force the gripper through open->close->open at startup so it is
@@ -471,7 +451,6 @@ class VectorBH6ArmDriver:
         cfg = self._gripper_cfg
         logger.info("[gripper] priming: open %.2f -> grip %.2f x%d",
                     cfg.open_pos, cfg.grip_pos, reps)
-        self._widen_gripper_pmax()
         try:
             # Clear any persistent over-limit fault BEFORE moving: a faulted
             # motor silently ignores every MIT command until cleared+re-enabled,
@@ -506,27 +485,37 @@ class VectorBH6ArmDriver:
         return True
 
     def gripper_drive(self, pos: float, duration: float,
-                      poll_feedback: bool = False) -> None:
+                      poll_feedback: bool = True) -> None:
         """Command the gripper to `pos` and stream it for `duration` seconds.
 
         The dedicated gripper thread streams the MIT frames at ~50Hz from
         `_gripper_hold_target`, so this just sets the target and lets it run
         (a single send_mit only pulses a Damiao motor — actuation needs the
-        continuous stream the thread provides). Feedback polling is OFF by
-        default: this motor never acks, and the poll can block on the shared
-        bus, starving the stream.
+        continuous stream the thread provides).
         """
         if self._gripper_motor is None:
             logger.info("[gripper] no motor — skip drive")
             return
         cfg = self._gripper_cfg
+        ctrl = self._arm._ctrl_map.get("damiao")
         self._gripper_limp_active = False
-        pos = float(max(min(pos, cfg.open_limit), -2.4))   # hard safety clamp
         self._gripper_hold_target = pos
         if duration <= 0:
             return
         t_end = time.monotonic() + duration
         while time.monotonic() < t_end:
+            if poll_feedback:
+                try:
+                    self._gripper_motor.request_feedback()
+                    time.sleep(0.02)
+                    if ctrl:
+                        ctrl.poll_feedback_once()
+                    st = self._gripper_motor.get_state()
+                    if st is not None:
+                        logger.info("[gripper] drive pos=%.3f status=%d (target=%.2f)",
+                                    st.pos, st.status_code, pos)
+                except Exception:
+                    pass
             time.sleep(0.02)
 
     def gripper_open(self) -> bool:
@@ -572,33 +561,75 @@ class VectorBH6ArmDriver:
         logger.info("[gripper] limp: fingers free%s",
                     f" for {duration}s" if duration else " until next command")
 
-    def gripper_grip(self, suppress_open: bool = False) -> bool:
-        """Close gripper onto object. Returns True if an object was detected in the grip."""
+    def gripper_grip(self, suppress_open: bool = False, target: float | None = None,
+                     kp: float | None = None) -> bool:
+        """Close gripper onto object. Returns True if an object was detected in the grip.
+
+        Args:
+            suppress_open: if True, never auto-reopen on failure (keeps object).
+            target: explicit close position; defaults to cfg.grip_pos.
+            kp: stiffness override; defaults to cfg.mit_kp. Use a HIGHER kp for
+                a firm pinch at the SAME position (avoids deeper travel that
+                slams the mechanical stop and over-limit-faults the motor).
+        """
         if self._gripper_motor is None:
             logger.info("[gripper] no motor — skip grip")
             return False
         cfg = self._gripper_cfg
-        target = cfg.grip_pos
+        ctrl = self._arm._ctrl_map.get("damiao")
+        target = cfg.grip_pos if target is None else target
 
         self._gripper_limp_active = False
         # Keep the streaming thread on the grip target for the whole command
         # window (never drop to idle during the settle), then correct the hold
         # point to wherever the motor actually stopped after we poll it.
         self._gripper_hold_target = target
-        ok = self._gripper_cmd(target)
+        ok = self._gripper_cmd(target, kp=kp)
         if not ok:
             logger.warning("[gripper] grip cmd failed")
             if not suppress_open:
                 self.gripper_open()
             return False
 
-        # This motor never acks feedback (verified: get_state always None), so
-        # polling here would only block on bus timeouts. Fire-and-forget: it
-        # closed, and the streaming thread holds the grip target so the cup
-        # stays pinched through lift and transport.
-        logger.info("[gripper] no feedback — holding at grip target")
-        self._gripper_hold_target = target
-        return True
+        st = None
+        for _ in range(5):
+            try:
+                self._gripper_motor.request_feedback()
+            except Exception:
+                break
+            time.sleep(0.02)
+            if ctrl:
+                ctrl.poll_feedback_once()
+            st = self._gripper_motor.get_state()
+            if st is not None:
+                break
+
+        if st is None:
+            # Command was sent fire-and-forget; assume it closed and hold at
+            # the grip position so the cup stays pinched during transport.
+            logger.info("[gripper] no feedback — holding at grip target")
+            self._gripper_hold_target = target
+            return True
+
+        actual = st.pos
+        delta = abs(actual - target)
+
+        # Hold at whatever position the gripper reached. This keeps the cup
+        # pinched even if the motor reached grip_pos (small objects), and if the
+        # cup slips the motor will re-close toward this hold point. Never
+        # auto-reopen: reopening here causes the open-close flap and drops the
+        # object.
+        self._gripper_hold_target = actual
+
+        # delta > threshold means gripper was blocked by an object before reaching full close
+        if delta > cfg.grip_delta_threshold:
+            logger.info("[gripper] GRIPPED object: pos=%.3f (delta=%.3f threshold=%.3f)",
+                        actual, delta, cfg.grip_delta_threshold)
+            return True
+        else:
+            logger.info("[gripper] close reached target pos=%.3f (delta=%.3f) — holding, keeping object",
+                        actual, delta)
+            return True
 
     def get_state(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         return self._arm.get_state()
@@ -729,13 +760,15 @@ class VectorBH6ArmDriver:
         The engine calls this AFTER _approach_and_pick() has moved the arm to
         HOVER_Z above the object with gripper already open. Sequence:
 
-            1. Continuous descend straight to grip height  — gripper stays OPEN
-            2. Nudge forward into the object                — fingers wrap around it
-            3. Close gripper firmly to hold
-            4. Lift to clearance height
-            5. Transport to drop location
-            6. Open gripper to release
-            7. Return to scan pose (home)
+            1. Descend to approach height (object + 8 cm)    — gripper still open
+            2. Open gripper explicitly (confirm fully open near object)
+            3. Nudge forward 3 cm into the object             — gripper wraps around it
+            4. Close gripper firmly to hold
+            5. Retry once lower if missed
+            6. Lift to clearance height
+            7. Transport to drop location
+            8. Open gripper to release
+            9. Return to scan pose (home)
         """
         if not command.pickup_pose:
             logger.warning("[triage] no pickup_pose — aborting")
@@ -749,24 +782,38 @@ class VectorBH6ArmDriver:
         pz = pu.get("z", 0.10)      # object surface height
         pitch = pu.get("pitch", 0.4)
 
-# ── 1. ONE continuous descent: hover -> grip height ──────────────
-        # The gripper was already opened at hover and the streaming thread
-        # holds it open the whole way down — no intermediate stop, no second
-        # open call, just one fluid motion onto the cup.
-        logger.info("[triage] continuous descend to grip z=%.3f", pz)
-        if not self.move_to_pose(x=px, y=py, z=pz,
+        # ── 1. Descend to just above the object ───────────────────────────
+        approach_z = pz + 0.08      # 8 cm above object — gripper fingers clear the top
+        logger.info("[triage] descend to approach z=%.3f", approach_z)
+        if not self.move_to_pose(x=px, y=py, z=approach_z,
                                  roll=0, pitch=pitch, yaw=0,
-                                 duration=3.5, frame_cb=frame_cb):
-            logger.warning("[triage] descend IK failed — joint-space descent")
+                                 duration=3.0, frame_cb=frame_cb):
+            logger.warning("[triage] approach IK failed — joint-space descent")
             q, _, _ = self._arm.get_state()
             q_down = q.copy()
             q_down[2] += 0.35
             self.move_to_joints(q_down, duration=2.5, frame_cb=frame_cb)
 
-        # ── 2. Nudge forward into the object so the fingers wrap it ──────
-        # Pushes the cup into the open gripper fingers so the close has
-        # something to bite on. 14cm past center — reaches well past the cup.
-        nudge_x = px + 0.14
+        # ── 2. Open gripper here — fingers spread around the object ───────
+        if frame_cb:
+            frame_cb()
+        logger.info("[triage] opening gripper beside object")
+        self.gripper_open()
+
+        # ── 3. Descend to grip height ─────────────────────────────────────
+        logger.info("[triage] descend to grip z=%.3f", pz)
+        if not self.move_to_pose(x=px, y=py, z=pz,
+                                 roll=0, pitch=pitch, yaw=0,
+                                 duration=2.0, frame_cb=frame_cb):
+            q, _, _ = self._arm.get_state()
+            q_grip = q.copy()
+            q_grip[2] += 0.22
+            self.move_to_joints(q_grip, duration=1.8, frame_cb=frame_cb)
+
+        # ── 4. Nudge forward 3 cm into the object ────────────────────────
+        # This pushes the cup into the gripper fingers so the close has
+        # something to bite on rather than closing on air beside the cup.
+        nudge_x = px + 0.03
         logger.info("[triage] nudge forward to x=%.3f", nudge_x)
         if not self.move_to_pose(x=nudge_x, y=py, z=pz,
                                  roll=0, pitch=pitch, yaw=0,
@@ -774,45 +821,44 @@ class VectorBH6ArmDriver:
             # Joint-space nudge: increase shoulder extension slightly
             q, _, _ = self._arm.get_state()
             q_nudge = q.copy()
-            q_nudge[1] += 0.12
+            q_nudge[1] += 0.06
             self.move_to_joints(q_nudge, duration=1.0, frame_cb=frame_cb)
 
-        # ── 3. Close gripper firmly ───────────────────────────────────────
+        # ── 5. Close gripper firmly ───────────────────────────────────────
         if frame_cb:
             frame_cb()
         logger.info("[triage] closing gripper...")
         gripped = self.gripper_grip()
 
-        # Firm up the hold: wait a moment then re-close so the cup is secure.
-        # gripper_grip never re-opens on its own, so this is safe.
-        time.sleep(0.3)
+        # Two-stage grip: after the initial soft close, settle a moment so the
+        # fingers seat around the object, then pinch FIRMER with a stiffer kp at
+        # the SAME position. Deeper travel (e.g. -1.2) slams the mechanical stop
+        # and over-limit-faults the motor, so tightness comes from stiffness,
+        # never from a lower target. Never re-opens — no drop risk.
+        time.sleep(0.5)
         if frame_cb:
             frame_cb()
-        self.gripper_grip()
+        self.gripper_grip(suppress_open=True, target=self._gripper_cfg.grip_pos,
+                          kp=self._gripper_cfg.grip_tight_kp)
+        logger.info("[triage] grip pinched harder (kp=%.0f) at %.2f",
+                    self._gripper_cfg.grip_tight_kp, self._gripper_cfg.grip_pos)
 
         if not gripped:
             logger.warning("[triage] no object detected in grip — holding anyway and continuing")
 
-        # ── 4. Lift to clearance height ───────────────────────────────────
-        # Stiffen the wrist/forearm joints during the load-bearing phase:
-        # 4310 wrists at kp18 sag and oscillate under the cup, which reads as
-        # a staggered, choppy vertical lift. Restored right after transport.
-        kp_saved = self._mit_kp.copy()
-        kd_saved = self._mit_kd.copy()
-        self._mit_kp[3:6] = 40.0
-        self._mit_kd[3:6] = 5.0
+        # ── 6. Lift to clearance height ───────────────────────────────────
         lift_z = max(pz + 0.30, 0.34)
         logger.info("[triage] lifting to z=%.3f", lift_z)
         if not self.move_to_pose(x=nudge_x, y=py, z=lift_z,
                                  roll=0, pitch=pitch, yaw=0,
-                                 duration=3.5, frame_cb=frame_cb):
+                                 duration=4.0, frame_cb=frame_cb):
             q, _, _ = self._arm.get_state()
             q_lift = q.copy()
             q_lift[2] = min(q_lift[2] - 0.7, -0.5)  # straighten elbow = raise end-effector
             q_lift[1] -= 0.15
-            self.move_to_joints(q_lift, duration=3.0, frame_cb=frame_cb)
+            self.move_to_joints(q_lift, duration=3.5, frame_cb=frame_cb)
 
-        # ── 5. Transport to drop location ─────────────────────────────────
+        # ── 7. Transport to drop location ─────────────────────────────────
         if command.drop_joints is not None:
             target_q = np.deg2rad(np.array(command.drop_joints, dtype=np.float64))
             logger.info("[triage] transporting to drop joints %s", np.round(target_q, 3))
@@ -823,11 +869,7 @@ class VectorBH6ArmDriver:
         else:
             logger.warning("[triage] no drop target — dropping in place")
 
-        # Load-bearing stiffness phase is over — restore the base wrist gains
-        self._mit_kp[:] = kp_saved
-        self._mit_kd[:] = kd_saved
-
-        # ── 6. Release ────────────────────────────────────────────────────
+        # ── 8. Release ────────────────────────────────────────────────────
         if frame_cb:
             frame_cb()
         logger.info("[triage] releasing into bin")

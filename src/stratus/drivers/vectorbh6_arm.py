@@ -765,8 +765,8 @@ class VectorBH6ArmDriver:
 
         # ── 2. Nudge forward into the object so the fingers wrap it ──────
         # Pushes the cup into the open gripper fingers so the close has
-        # something to bite on. 10cm past center — reaches well past the cup.
-        nudge_x = px + 0.10
+        # something to bite on. 14cm past center — reaches well past the cup.
+        nudge_x = px + 0.14
         logger.info("[triage] nudge forward to x=%.3f", nudge_x)
         if not self.move_to_pose(x=nudge_x, y=py, z=pz,
                                  roll=0, pitch=pitch, yaw=0,

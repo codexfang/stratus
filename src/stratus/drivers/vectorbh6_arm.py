@@ -39,13 +39,10 @@ class GripperConfig:
     # gripper never acks it ("register 10 write ack not received") and the stray
     # frame may corrupt the MIT hold — so it defaults OFF for the gripper. The
     # DM4310 moves on MIT frames alone once enabled.
-    # ensure_mode(Mode.MIT) MUST be sent before MIT control (vendor canonical
-    # path, and the motorbridge CLI does it by default). If the motor was last
-    # left in POS_VEL/VEL it responds to MIT frames with only tiny movements —
-    # which is exactly the "opens a little at 2.0, 3.6 AND 9.0" symptom. The
-    # earlier "ack not received" note was from a faulted-motor era and is not
-    # reproducible; keep it ON and never let a stale fault disable the mode.
-    use_ensure_mode: bool = True
+    # ensure_mode is OFF — proven harmful on this motor: it writes CTRL_MODE
+    # (register 10) and the motor then ignores MIT frames entirely (no motion
+    # at all), verified on hardware. Do NOT re-enable.
+    use_ensure_mode: bool = False
     grip_delta_threshold: float = 0.5  # delta vs target to confirm object held
 
 
@@ -309,6 +306,7 @@ class VectorBH6ArmDriver:
                 pass
 
             self._gripper_motor = mot
+            self._widen_gripper_pmax()
             logger.info("Gripper ID %d ready in MIT mode (timeout=60s)", cfg.motor_id)
         except Exception as e:
             logger.warning("Gripper init failed: %s", e)
@@ -398,19 +396,13 @@ class VectorBH6ArmDriver:
         # Self-healing fault recovery BEFORE every command. An over-limit fault
         # (e.g. from a bad earlier run commanding 4.0/6.0) makes the motor
         # silently ignore ALL MIT frames while send_mit() still returns ok.
-        # clear_error+enable+ensure_mode(MIT) usually clears it without a
-        # power cycle, and RE-ASSERTS MIT mode so the position field is
-        # interpreted as radians (a stale POS_VEL/VEL mode yields tiny motion).
+        # clear_error+enable usually clears it without a power cycle.
         for _ in range(2):
             try:
                 self._gripper_motor.clear_error()
                 time.sleep(0.1)
                 self._gripper_motor.enable()
                 time.sleep(0.1)
-                try:
-                    self._gripper_motor.ensure_mode(Mode.MIT, 1000)
-                except Exception:
-                    pass
             except Exception:
                 pass
 
@@ -441,6 +433,30 @@ class VectorBH6ArmDriver:
                 pass
         return True
 
+    def _widen_gripper_pmax(self, retries: int = 3) -> None:
+        """Raise the motor's stored MIT position mapping range (PMAX).
+
+        Damiao MIT frames are scaled against the device's PMAX register (21).
+        If the stored PMAX on THIS gripper is small (the observed symptom:
+        fingers travel only a few mm no matter if we command 2.0, 3.6 or 9.0),
+        every command beyond it is clamped in firmware. Writing the 4310
+        catalog values (PMAX 12.5 / VMAX 30 / TMAX 10) widens the mapping.
+        Write frames are fire-and-forget on the bus — Damiao executes them
+        even though this motor never acks (only the read-verify fails).
+        """
+        mot = self._gripper_motor
+        if mot is None:
+            return
+        for rid, val in ((21, 12.5), (22, 30.0), (23, 10.0)):
+            for _ in range(retries):
+                try:
+                    mot.write_register_f32(rid, val)
+                    time.sleep(0.12)
+                    break
+                except Exception as e:
+                    logger.warning("[gripper] write reg %d=%.1f failed (%s) — retry", rid, val, e)
+        logger.info("[gripper] PMAX/VMAX/TMAX widened to 12.5/30/10")
+
     def prime_gripper(self, reps: int = 4, wait: float = 0.45) -> bool:
         """Force the gripper through open->close->open at startup so it is
         unambiguously enabled, in MIT mode, and moving before a pick.
@@ -455,6 +471,7 @@ class VectorBH6ArmDriver:
         cfg = self._gripper_cfg
         logger.info("[gripper] priming: open %.2f -> grip %.2f x%d",
                     cfg.open_pos, cfg.grip_pos, reps)
+        self._widen_gripper_pmax()
         try:
             # Clear any persistent over-limit fault BEFORE moving: a faulted
             # motor silently ignores every MIT command until cleared+re-enabled,

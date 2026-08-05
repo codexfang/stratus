@@ -27,10 +27,10 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 3.0           # wide spread for the cup. 2.0 verified; 3.0 gives ~50% more surface. If it red-LEDs, run recover_gripper.py to map the true max and lower open_pos
+    open_pos: float = 6.0           # DOUBLE the wide spread: fingers close fully around the cup. Motor is DM4310 (range ±12.5 rad); if it red-LED/stalls at 6.0, map the true max with recover_gripper.py and lower open_pos
     close_pos: float = 0.0          # neutral park after drop (safe middle, won't fault)
     grip_pos: float = -0.8          # gentle close within range (-2.5 over-limit FAULTS motor)
-    mit_kp: float = 8.0             # PROVEN combo with open 2.0+ (vendor-tuned)
+    mit_kp: float = 8.0             # proven gentle gains — rests on the stop without slamming
     mit_kd: float = 1.0
     settle_time: float = 0.4        # thread holds the position continuously — no need to idle 2s
     # ensure_mode uses the EXTENDED CAN protocol (register 10 write). This
@@ -785,8 +785,8 @@ class VectorBH6ArmDriver:
 
         # ── 2. Nudge forward into the object so the fingers wrap it ──────
         # Pushes the cup into the open gripper fingers so the close has
-        # something to bite on. 6cm reach instead of 3cm — gets further out.
-        nudge_x = px + 0.06
+        # something to bite on. 10cm past center — reaches well past the cup.
+        nudge_x = px + 0.10
         logger.info("[triage] nudge forward to x=%.3f", nudge_x)
         if not self.move_to_pose(x=nudge_x, y=py, z=pz,
                                  roll=0, pitch=pitch, yaw=0,

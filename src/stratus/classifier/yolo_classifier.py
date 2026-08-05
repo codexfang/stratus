@@ -231,8 +231,12 @@ class YOLOClassifier:
         unique_labels = list(dict.fromkeys(o.name for o in objects))
         logger.info("Detected (post-NMS): %s", unique_labels)
 
-        # Pick the highest-confidence detection as the primary pick target
-        obj = max(objects, key=lambda o: o.confidence)
+        # Pick the primary pick target from the LARGEST-area bounding box (area
+        # first, confidence as tiebreak). The biggest box is the actual object —
+        # not a spurious high-labels fragment — so its center is the accurate
+        # pick point. High confidence boxes that are tiny fragments (handle,
+        # rim, shadow) get ignored this way.
+        obj = max(objects, key=lambda o: (o.width * o.height, o.confidence))
 
         # Normalised centre of the bounding box (0-1)
         cx = obj.left + obj.width / 2

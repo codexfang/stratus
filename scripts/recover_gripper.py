@@ -27,7 +27,7 @@ from stratus.drivers.vectorbh6_arm import GripperConfig, VectorBH6ArmDriver
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--gripper-id", type=int, default=7)
-    ap.add_argument("--max", type=float, default=3.0, help="open-side walk target (3.0; dial down if it faults)")
+    ap.add_argument("--max", type=float, default=6.0, help="open-side walk target (6.0 full width; dial down if it stalls/faults)")
     ap.add_argument("--min", type=float, default=-0.8, help="close-side walk target")
     ap.add_argument("--step", type=float, default=0.1)
     ap.add_argument("--step-dur", type=float, default=0.3)

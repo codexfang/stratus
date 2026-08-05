@@ -55,6 +55,10 @@ def main():
                         help="Path to YOLO-World .pt model file")
     parser.add_argument("--conf", type=float, default=0.15,
                         help="YOLO confidence threshold (default: 0.15)")
+    parser.add_argument("--yolo-imgsz", type=int, default=640,
+                        help="YOLO inference resolution — lower = faster detection (default: 640)")
+    parser.add_argument("--yolo-device", default="",
+                        help="Inference backend: mps/cuda/cpu (default: auto-select fastest)")
 
     # Coordinate mapping (used when no calibration file is present)
     parser.add_argument("--map-offset-x", type=float, default=0.15,
@@ -150,8 +154,10 @@ def main():
             map_offset_y=args.map_offset_y,
             map_scale_y=args.map_scale_y,
             pitch=args.pitch,
+            imgsz=args.yolo_imgsz,
+            device=args.yolo_device,
         )
-        print(f"YOLO model: {args.model} (conf={args.conf})")
+        print(f"YOLO model: {args.model} (conf={args.conf}, imgsz={args.yolo_imgsz}, device={args.yolo_device or 'auto'})")
 
     # ── Telemetry ─────────────────────────────────────────────────────────
     telemetry = LocalTelemetry(

@@ -132,6 +132,9 @@ class YOLOClassifier:
         map_scale_y: float = 0.40,
         pickup_z: float = 0.10,
         pitch: float = 0.4,
+        imgsz: int = 640,               # inference resolution — lower = faster detection
+        device: str = "",               # "mps"/"cuda"/"cpu" — auto-select if empty
+        warmup: bool = True,            # first-run inference caches lazy graph / MPS kernels
     ):
         path = Path(model_path)
         if not path.exists():
@@ -139,6 +142,8 @@ class YOLOClassifier:
         self._model = YOLO(str(model_path))
         self._model.set_classes(CLASSES)
         self._conf = conf_threshold
+        self._imgsz = imgsz
+        self._device = device or self._auto_device()
         self._map_offset_x = map_offset_x
         self._map_scale_x = map_scale_x
         self._map_offset_y = map_offset_y
@@ -146,6 +151,23 @@ class YOLOClassifier:
         self._pickup_z = pickup_z
         self._pitch = pitch
         self._bg_captured = False
+        self._infer_ms = 0.0           # rolling seconds-per-inference (excludes warm-up)
+
+        if warmup:
+            # Cold-start penalty: the first ultralytics call builds the graph,
+            # compiles kernels and (on MPS) warms compute — up to seconds. Run a
+            # throwaway inference once so the live loop never eats that latency.
+            try:
+                import numpy as _np
+                _ = self._model(
+                    _np.zeros((480, 640, 3), dtype=_np.uint8),
+                    conf=self._conf, verbose=False, imgsz=self._imgsz, device=self._device,
+                )
+                logger.info("YOLO warm-up done (device=%s, imgsz=%d)", self._device, self._imgsz)
+            except Exception as e:
+                # fall back to CPU so detection still works
+                self._device = "cpu"
+                logger.warning("YOLO warm-up failed — falling back to cpu: %s", e)
 
         # Workspace homography (loaded from calibration file if present)
         self._homography: np.ndarray | None = None
@@ -153,6 +175,19 @@ class YOLOClassifier:
         self._load_calibration()
 
         logger.info("YOLO-World loaded (%d custom classes)", len(CLASSES))
+
+    @staticmethod
+    def _auto_device() -> str:
+        """Pick the fastest inference backend available (MPS > CUDA > CPU)."""
+        try:
+            import torch
+            if torch.backends.mps.is_available():
+                return "mps"
+            if torch.cuda.is_available():
+                return "cuda"
+        except Exception:
+            pass
+        return "cpu"
 
     def _load_calibration(self) -> None:
         if not CALIBRATION_PATH.exists():
@@ -194,7 +229,11 @@ class YOLOClassifier:
                 pickup_pose=None, drop_joints=DROP_JOINTS["B"],
             )
 
-        results = self._model(frame.image, conf=self._conf, verbose=False, iou=0.45)[0]
+        import time as _time
+        _t0 = _time.perf_counter()
+        results = self._model(frame.image, conf=self._conf, verbose=False,
+                             iou=0.45, imgsz=self._imgsz, device=self._device)[0]
+        self._infer_ms = 0.9 * self._infer_ms + 0.1 * ((_time.perf_counter() - _t0) * 1000)
 
         objects: list[DetectedObject] = []
         for b in results.boxes:
@@ -229,7 +268,7 @@ class YOLOClassifier:
         objects = _nms_merge(objects, iou_threshold=0.4)
 
         unique_labels = list(dict.fromkeys(o.name for o in objects))
-        logger.info("Detected (post-NMS): %s", unique_labels)
+        logger.info("Detected (post-NMS): %s [infer %.0f ms]", unique_labels, self._infer_ms)
 
         # Pick the primary pick target from the LARGEST-area bounding box (area
         # first, confidence as tiebreak). The biggest box is the actual object —

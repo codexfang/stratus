@@ -16,6 +16,7 @@ import numpy.typing as npt
 sys.path.insert(0, str(Path.home() / "reBotArm_control_py"))
 from reBotArm_control_py.actuator import RobotArm as VBArm
 from reBotArm_control_py.controllers import ArmEndPos
+from motorbridge import Mode
 
 from stratus.core.arm_driver import ArmDriver, ArmObservation, TriageCommand
 
@@ -38,7 +39,13 @@ class GripperConfig:
     # gripper never acks it ("register 10 write ack not received") and the stray
     # frame may corrupt the MIT hold — so it defaults OFF for the gripper. The
     # DM4310 moves on MIT frames alone once enabled.
-    use_ensure_mode: bool = False
+    # ensure_mode(Mode.MIT) MUST be sent before MIT control (vendor canonical
+    # path, and the motorbridge CLI does it by default). If the motor was last
+    # left in POS_VEL/VEL it responds to MIT frames with only tiny movements —
+    # which is exactly the "opens a little at 2.0, 3.6 AND 9.0" symptom. The
+    # earlier "ack not received" note was from a faulted-motor era and is not
+    # reproducible; keep it ON and never let a stale fault disable the mode.
+    use_ensure_mode: bool = True
     grip_delta_threshold: float = 0.5  # delta vs target to confirm object held
 
 
@@ -391,13 +398,19 @@ class VectorBH6ArmDriver:
         # Self-healing fault recovery BEFORE every command. An over-limit fault
         # (e.g. from a bad earlier run commanding 4.0/6.0) makes the motor
         # silently ignore ALL MIT frames while send_mit() still returns ok.
-        # clear_error+enable usually clears it without a power cycle.
+        # clear_error+enable+ensure_mode(MIT) usually clears it without a
+        # power cycle, and RE-ASSERTS MIT mode so the position field is
+        # interpreted as radians (a stale POS_VEL/VEL mode yields tiny motion).
         for _ in range(2):
             try:
                 self._gripper_motor.clear_error()
-                time.sleep(0.15)
+                time.sleep(0.1)
                 self._gripper_motor.enable()
-                time.sleep(0.15)
+                time.sleep(0.1)
+                try:
+                    self._gripper_motor.ensure_mode(Mode.MIT, 1000)
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -764,6 +777,13 @@ class VectorBH6ArmDriver:
             logger.warning("[triage] no object detected in grip — holding anyway and continuing")
 
         # ── 4. Lift to clearance height ───────────────────────────────────
+        # Stiffen the wrist/forearm joints during the load-bearing phase:
+        # 4310 wrists at kp18 sag and oscillate under the cup, which reads as
+        # a staggered, choppy vertical lift. Restored right after transport.
+        kp_saved = self._mit_kp.copy()
+        kd_saved = self._mit_kd.copy()
+        self._mit_kp[3:6] = 40.0
+        self._mit_kd[3:6] = 5.0
         lift_z = max(pz + 0.30, 0.34)
         logger.info("[triage] lifting to z=%.3f", lift_z)
         if not self.move_to_pose(x=nudge_x, y=py, z=lift_z,
@@ -785,6 +805,10 @@ class VectorBH6ArmDriver:
             self.move_to_pose(**command.drop_pose, duration=6.0, frame_cb=frame_cb)
         else:
             logger.warning("[triage] no drop target — dropping in place")
+
+        # Load-bearing stiffness phase is over — restore the base wrist gains
+        self._mit_kp[:] = kp_saved
+        self._mit_kd[:] = kd_saved
 
         # ── 6. Release ────────────────────────────────────────────────────
         if frame_cb:

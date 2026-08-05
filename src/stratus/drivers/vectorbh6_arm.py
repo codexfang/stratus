@@ -433,29 +433,29 @@ class VectorBH6ArmDriver:
                 pass
         return True
 
-    def _widen_gripper_pmax(self, retries: int = 3) -> None:
-        """Raise the motor's stored MIT position mapping range (PMAX).
+    def _widen_gripper_pmax(self) -> None:
+        """Try to raise the motor's stored MIT position mapping range (PMAX).
 
         Damiao MIT frames are scaled against the device's PMAX register (21).
-        If the stored PMAX on THIS gripper is small (the observed symptom:
-        fingers travel only a few mm no matter if we command 2.0, 3.6 or 9.0),
-        every command beyond it is clamped in firmware. Writing the 4310
-        catalog values (PMAX 12.5 / VMAX 30 / TMAX 10) widens the mapping.
-        Write frames are fire-and-forget on the bus — Damiao executes them
-        even though this motor never acks (only the read-verify fails).
+        If the stored PMAX on THIS gripper is small (observed symptom: fingers
+        travel only a few mm no matter if we command 2.0, 3.6 or 9.0), every
+        command beyond it is clamped in firmware. Writing the 4310 catalog
+        values (PMAX 12.5 / VMAX 30 / TMAX 10) widens the mapping.
+
+        NOTE: this gripper never acks register protocol (sends run ok on MIT
+        only), so write_register_f32 raises ack timeout every time. Damiao
+        usually still EXECUTES the write on the bus even when the response is
+        missed, so we fire it once per register and hope for the best.
         """
         mot = self._gripper_motor
         if mot is None:
             return
         for rid, val in ((21, 12.5), (22, 30.0), (23, 10.0)):
-            for _ in range(retries):
-                try:
-                    mot.write_register_f32(rid, val)
-                    time.sleep(0.12)
-                    break
-                except Exception as e:
-                    logger.warning("[gripper] write reg %d=%.1f failed (%s) — retry", rid, val, e)
-        logger.info("[gripper] PMAX/VMAX/TMAX widened to 12.5/30/10")
+            try:
+                mot.write_register_f32(rid, val)
+                time.sleep(0.05)
+            except Exception as e:
+                logger.debug("[gripper] write reg %d=%.1f no ack (%s)", rid, val, e)
 
     def prime_gripper(self, reps: int = 4, wait: float = 0.45) -> bool:
         """Force the gripper through open->close->open at startup so it is

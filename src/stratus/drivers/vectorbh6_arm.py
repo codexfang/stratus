@@ -27,12 +27,12 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 2.0           # PROVEN on hardware (test physically opened). Larger values (4.0/6.0) slam the stop and over-limit-FAULT the motor (silently ignores commands until power cycle)
+    open_pos: float = 3.0           # wide spread for the cup. 2.0 verified; 3.0 gives ~50% more surface. If it red-LEDs, run recover_gripper.py to map the true max and lower open_pos
     close_pos: float = 0.0          # neutral park after drop (safe middle, won't fault)
     grip_pos: float = -0.8          # gentle close within range (-2.5 over-limit FAULTS motor)
-    mit_kp: float = 8.0             # PROVEN combo with open 2.0 (vendor-tuned)
+    mit_kp: float = 8.0             # PROVEN combo with open 2.0+ (vendor-tuned)
     mit_kd: float = 1.0
-    settle_time: float = 2.0        # seconds to wait after sending gripper command
+    settle_time: float = 0.4        # thread holds the position continuously — no need to idle 2s
     # ensure_mode uses the EXTENDED CAN protocol (register 10 write). This
     # gripper never acks it ("register 10 write ack not received") and the stray
     # frame may corrupt the MIT hold — so it defaults OFF for the gripper. The
@@ -749,15 +749,13 @@ class VectorBH6ArmDriver:
         The engine calls this AFTER _approach_and_pick() has moved the arm to
         HOVER_Z above the object with gripper already open. Sequence:
 
-            1. Descend to approach height (object + 8 cm)    — gripper still open
-            2. Open gripper explicitly (confirm fully open near object)
-            3. Nudge forward 3 cm into the object             — gripper wraps around it
-            4. Close gripper firmly to hold
-            5. Retry once lower if missed
-            6. Lift to clearance height
-            7. Transport to drop location
-            8. Open gripper to release
-            9. Return to scan pose (home)
+            1. Continuous descend straight to grip height  — gripper stays OPEN
+            2. Nudge forward into the object                — fingers wrap around it
+            3. Close gripper firmly to hold
+            4. Lift to clearance height
+            5. Transport to drop location
+            6. Open gripper to release
+            7. Return to scan pose (home)
         """
         if not command.pickup_pose:
             logger.warning("[triage] no pickup_pose — aborting")
@@ -771,38 +769,24 @@ class VectorBH6ArmDriver:
         pz = pu.get("z", 0.10)      # object surface height
         pitch = pu.get("pitch", 0.4)
 
-        # ── 1. Descend to just above the object ───────────────────────────
-        approach_z = pz + 0.08      # 8 cm above object — gripper fingers clear the top
-        logger.info("[triage] descend to approach z=%.3f", approach_z)
-        if not self.move_to_pose(x=px, y=py, z=approach_z,
+# ── 1. ONE continuous descent: hover -> grip height ──────────────
+        # The gripper was already opened at hover and the streaming thread
+        # holds it open the whole way down — no intermediate stop, no second
+        # open call, just one fluid motion onto the cup.
+        logger.info("[triage] continuous descend to grip z=%.3f", pz)
+        if not self.move_to_pose(x=px, y=py, z=pz,
                                  roll=0, pitch=pitch, yaw=0,
-                                 duration=3.0, frame_cb=frame_cb):
-            logger.warning("[triage] approach IK failed — joint-space descent")
+                                 duration=3.5, frame_cb=frame_cb):
+            logger.warning("[triage] descend IK failed — joint-space descent")
             q, _, _ = self._arm.get_state()
             q_down = q.copy()
             q_down[2] += 0.35
             self.move_to_joints(q_down, duration=2.5, frame_cb=frame_cb)
 
-        # ── 2. Open gripper here — fingers spread around the object ───────
-        if frame_cb:
-            frame_cb()
-        logger.info("[triage] opening gripper beside object")
-        self.gripper_open()
-
-        # ── 3. Descend to grip height ─────────────────────────────────────
-        logger.info("[triage] descend to grip z=%.3f", pz)
-        if not self.move_to_pose(x=px, y=py, z=pz,
-                                 roll=0, pitch=pitch, yaw=0,
-                                 duration=2.0, frame_cb=frame_cb):
-            q, _, _ = self._arm.get_state()
-            q_grip = q.copy()
-            q_grip[2] += 0.22
-            self.move_to_joints(q_grip, duration=1.8, frame_cb=frame_cb)
-
-        # ── 4. Nudge forward 3 cm into the object ────────────────────────
-        # This pushes the cup into the gripper fingers so the close has
-        # something to bite on rather than closing on air beside the cup.
-        nudge_x = px + 0.03
+        # ── 2. Nudge forward into the object so the fingers wrap it ──────
+        # Pushes the cup into the open gripper fingers so the close has
+        # something to bite on. 6cm reach instead of 3cm — gets further out.
+        nudge_x = px + 0.06
         logger.info("[triage] nudge forward to x=%.3f", nudge_x)
         if not self.move_to_pose(x=nudge_x, y=py, z=pz,
                                  roll=0, pitch=pitch, yaw=0,
@@ -810,10 +794,10 @@ class VectorBH6ArmDriver:
             # Joint-space nudge: increase shoulder extension slightly
             q, _, _ = self._arm.get_state()
             q_nudge = q.copy()
-            q_nudge[1] += 0.06
+            q_nudge[1] += 0.12
             self.move_to_joints(q_nudge, duration=1.0, frame_cb=frame_cb)
 
-        # ── 5. Close gripper firmly ───────────────────────────────────────
+        # ── 3. Close gripper firmly ───────────────────────────────────────
         if frame_cb:
             frame_cb()
         logger.info("[triage] closing gripper...")
@@ -829,19 +813,19 @@ class VectorBH6ArmDriver:
         if not gripped:
             logger.warning("[triage] no object detected in grip — holding anyway and continuing")
 
-        # ── 6. Lift to clearance height ───────────────────────────────────
+        # ── 4. Lift to clearance height ───────────────────────────────────
         lift_z = max(pz + 0.30, 0.34)
         logger.info("[triage] lifting to z=%.3f", lift_z)
         if not self.move_to_pose(x=nudge_x, y=py, z=lift_z,
                                  roll=0, pitch=pitch, yaw=0,
-                                 duration=4.0, frame_cb=frame_cb):
+                                 duration=3.5, frame_cb=frame_cb):
             q, _, _ = self._arm.get_state()
             q_lift = q.copy()
             q_lift[2] = min(q_lift[2] - 0.7, -0.5)  # straighten elbow = raise end-effector
             q_lift[1] -= 0.15
-            self.move_to_joints(q_lift, duration=3.5, frame_cb=frame_cb)
+            self.move_to_joints(q_lift, duration=3.0, frame_cb=frame_cb)
 
-        # ── 7. Transport to drop location ─────────────────────────────────
+        # ── 5. Transport to drop location ─────────────────────────────────
         if command.drop_joints is not None:
             target_q = np.deg2rad(np.array(command.drop_joints, dtype=np.float64))
             logger.info("[triage] transporting to drop joints %s", np.round(target_q, 3))
@@ -852,7 +836,7 @@ class VectorBH6ArmDriver:
         else:
             logger.warning("[triage] no drop target — dropping in place")
 
-        # ── 8. Release ────────────────────────────────────────────────────
+        # ── 6. Release ────────────────────────────────────────────────────
         if frame_cb:
             frame_cb()
         logger.info("[triage] releasing into bin")

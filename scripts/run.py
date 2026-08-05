@@ -35,8 +35,8 @@ def main():
                         help="Run without physical arm (preview only)")
     parser.add_argument("--gripper-id", type=int, default=7,
                         help="Damiao gripper motor CAN ID (default: 7)")
-    parser.add_argument("--gripper-open", type=float, default=2.0,
-                        help="Gripper open position (default: 2.0 — PROVEN on hardware; >2.0 over-limit-FAULTS motor)")
+    parser.add_argument("--gripper-open", type=float, default=3.0,
+                        help="Gripper open position (default: 3.0 — wide; 2.0 verified, 3.0 ~50% more)");
     parser.add_argument("--gripper-close", type=float, default=0.0,
                         help="Gripper neutral park position after drop (default: 0.0)")
     parser.add_argument("--gripper-grip", type=float, default=-0.8,
@@ -45,8 +45,8 @@ def main():
                         help="Gripper MIT kp (default: 8.0 — vendor-tuned, proven to open 2.0)")
     parser.add_argument("--gripper-delta", type=float, default=0.5,
                         help="Min position delta to confirm object in gripper (default: 0.5)")
-    parser.add_argument("--settle-time", type=float, default=2.0,
-                        help="Gripper settle time in seconds (default: 2.0)")
+    parser.add_argument("--settle-time", type=float, default=0.4,
+                        help="Gripper settle time in seconds (default: 0.4 — thread holds position, no dead time)")
 
     # YOLO / classifier
     parser.add_argument("--model", default="",

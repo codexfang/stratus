@@ -35,8 +35,8 @@ def main():
                         help="Run without physical arm (preview only)")
     parser.add_argument("--gripper-id", type=int, default=7,
                         help="Damiao gripper motor CAN ID (default: 7)")
-    parser.add_argument("--gripper-open", type=float, default=6.0,
-                        help="Gripper open position (default: 6.0 — DOUBLE width; dial down if it stalls/red-LEDs)");
+    parser.add_argument("--gripper-open", type=float, default=3.6,
+                        help="Gripper open position (default 3.6 — real hardware max; 4.0+ faults the motor). Auto-clamped");
     parser.add_argument("--gripper-close", type=float, default=0.0,
                         help="Gripper neutral park position after drop (default: 0.0)")
     parser.add_argument("--gripper-grip", type=float, default=-0.8,

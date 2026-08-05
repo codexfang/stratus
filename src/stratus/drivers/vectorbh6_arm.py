@@ -27,7 +27,8 @@ class GripperConfig:
     motor_id: int = 7
     feedback_id: int = 0x17
     model: str = "4310"
-    open_pos: float = 6.0           # DOUBLE the wide spread: fingers close fully around the cup. Motor is DM4310 (range ±12.5 rad); if it red-LED/stalls at 6.0, map the true max with recover_gripper.py and lower open_pos
+    open_pos: float = 3.6           # max width that PHYSICALLY opens. Measured: 2.0 & 3.0 open, 4.0+ FAULTS the motor (red LED, ignores everything). 6.0 = fingers never move. 3.6 sits just under the limit
+    open_limit: float = 3.85        # hard clamp: any gripper command above this gets clamped so it can never over-limit-fault again
     close_pos: float = 0.0          # neutral park after drop (safe middle, won't fault)
     grip_pos: float = -0.8          # gentle close within range (-2.5 over-limit FAULTS motor)
     mit_kp: float = 8.0             # proven gentle gains — rests on the stop without slamming
@@ -328,6 +329,9 @@ class VectorBH6ArmDriver:
             mot = self._gripper_motor
             target = self._gripper_hold_target
             if mot is not None and not self._gripper_limp_active and target is not None:
+                # Hard clamp (see _gripper_cmd): >open_limit over-limit-FAULTS
+                # the motor, which then silently ignores every frame.
+                target = min(max(target, -2.4), cfg.open_limit)
                 try:
                     mot.send_mit(target, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
                     hard_error_streak = 0
@@ -383,6 +387,14 @@ class VectorBH6ArmDriver:
             return False
         cfg = self._gripper_cfg
         ctrl = self._arm._ctrl_map.get("damiao")
+
+        # Hard safety clamp: commanding past the open-side limit (which sits
+        # between 3.0 working and 4.0 faulting) over-limit-FAULTS the motor
+        # and it then silently ignores EVERYTHING. Never allow it again.
+        if pos > cfg.open_limit or pos < -2.4:
+            logger.warning("[gripper] target %.2f outside safe range [-2.4, %.2f] "
+                           "— clamping (prevents over-limit fault)", pos, cfg.open_limit)
+            pos = float(np.clip(pos, -2.4, cfg.open_limit))
 
         # Self-healing fault recovery BEFORE every command. An over-limit fault
         # (e.g. from a bad earlier run commanding 4.0/6.0) makes the motor
@@ -497,6 +509,7 @@ class VectorBH6ArmDriver:
         cfg = self._gripper_cfg
         ctrl = self._arm._ctrl_map.get("damiao")
         self._gripper_limp_active = False
+        pos = float(max(min(pos, cfg.open_limit), -2.4))   # hard safety clamp
         self._gripper_hold_target = pos
         if duration <= 0:
             return

@@ -315,15 +315,17 @@ class VectorBH6ArmDriver:
                       kp=self._mit_kp, kd=self._mit_kd, request_feedback=False)
 
     def _gripper_loop(self) -> None:
-        """Continuous MIT stream for the gripper at ~50Hz.
+        """Continuous MIT stream for the gripper at ~50Hz — PURE SEND.
 
-        Uses the SAME proven cadence as the working arm joints / vendor
-        gripper: after every MIT frame request feedback then drain the bus.
-        This is the exact loop config that PHYSICALLY OPENED the gripper in
-        test_gripper.py, so it stays as-is.
+        Feedback on this motor NEVER arrives (it does not ack the register
+        protocol), yet request_feedback()+poll_feedback_once() sit on the
+        shared arm serial. pöll waits for a response that never comes and can
+        block on a bus timeout, starving the MIT stream EXACTLY while the arm
+        is slewing — which made fingers open "just a little" in the pipeline
+        but fully when the arm was idle. So: no request, no poll — just a
+        fixed-rate position stream. The motor moves on MIT frames alone.
         """
         cfg = self._gripper_cfg
-        ctrl = self._arm._ctrl_map.get("damiao")
         hard_error_streak = 0
         while not self._gripper_stop:
             mot = self._gripper_motor
@@ -347,15 +349,6 @@ class VectorBH6ArmDriver:
                         hard_error_streak += 1
                     logger.warning("[gripper] loop send failed (%s) streak=%d",
                                    e, hard_error_streak)
-                try:
-                    mot.request_feedback()
-                except Exception:
-                    pass
-                try:
-                    if ctrl:
-                        ctrl.poll_feedback_once()
-                except Exception:
-                    pass
                 time.sleep(0.02)
             elif mot is not None and self._gripper_limp_active:
                 # Zero-stiffness stream: motor stays powered but applies no
@@ -386,7 +379,6 @@ class VectorBH6ArmDriver:
         if self._gripper_motor is None:
             return False
         cfg = self._gripper_cfg
-        ctrl = self._arm._ctrl_map.get("damiao")
 
         # Hard safety clamp: commanding past the open-side limit (which sits
         # between 3.0 working and 4.0 faulting) over-limit-FAULTS the motor
@@ -432,17 +424,6 @@ class VectorBH6ArmDriver:
             time.sleep(0.2)
             try:
                 self._gripper_motor.send_mit(pos, 0.0, cfg.mit_kp, cfg.mit_kd, 0.0)
-            except Exception:
-                pass
-            try:
-                self._gripper_motor.request_feedback()
-                time.sleep(0.01)
-                if ctrl:
-                    ctrl.poll_feedback_once()
-                st = self._gripper_motor.get_state()
-                if st is not None:
-                    logger.info("[gripper] pos=%.3f status=%d (target=%.1f)",
-                                st.pos, st.status_code, pos)
             except Exception:
                 pass
         return True
@@ -495,19 +476,20 @@ class VectorBH6ArmDriver:
         return True
 
     def gripper_drive(self, pos: float, duration: float,
-                      poll_feedback: bool = True) -> None:
+                      poll_feedback: bool = False) -> None:
         """Command the gripper to `pos` and stream it for `duration` seconds.
 
         The dedicated gripper thread streams the MIT frames at ~50Hz from
         `_gripper_hold_target`, so this just sets the target and lets it run
         (a single send_mit only pulses a Damiao motor — actuation needs the
-        continuous stream the thread provides).
+        continuous stream the thread provides). Feedback polling is OFF by
+        default: this motor never acks, and the poll can block on the shared
+        bus, starving the stream.
         """
         if self._gripper_motor is None:
             logger.info("[gripper] no motor — skip drive")
             return
         cfg = self._gripper_cfg
-        ctrl = self._arm._ctrl_map.get("damiao")
         self._gripper_limp_active = False
         pos = float(max(min(pos, cfg.open_limit), -2.4))   # hard safety clamp
         self._gripper_hold_target = pos
@@ -515,18 +497,6 @@ class VectorBH6ArmDriver:
             return
         t_end = time.monotonic() + duration
         while time.monotonic() < t_end:
-            if poll_feedback:
-                try:
-                    self._gripper_motor.request_feedback()
-                    time.sleep(0.02)
-                    if ctrl:
-                        ctrl.poll_feedback_once()
-                    st = self._gripper_motor.get_state()
-                    if st is not None:
-                        logger.info("[gripper] drive pos=%.3f status=%d (target=%.2f)",
-                                    st.pos, st.status_code, pos)
-                except Exception:
-                    pass
             time.sleep(0.02)
 
     def gripper_open(self) -> bool:
@@ -578,7 +548,6 @@ class VectorBH6ArmDriver:
             logger.info("[gripper] no motor — skip grip")
             return False
         cfg = self._gripper_cfg
-        ctrl = self._arm._ctrl_map.get("damiao")
         target = cfg.grip_pos
 
         self._gripper_limp_active = False
@@ -593,45 +562,13 @@ class VectorBH6ArmDriver:
                 self.gripper_open()
             return False
 
-        st = None
-        for _ in range(5):
-            try:
-                self._gripper_motor.request_feedback()
-            except Exception:
-                break
-            time.sleep(0.02)
-            if ctrl:
-                ctrl.poll_feedback_once()
-            st = self._gripper_motor.get_state()
-            if st is not None:
-                break
-
-        if st is None:
-            # Command was sent fire-and-forget; assume it closed and hold at
-            # the grip position so the cup stays pinched during transport.
-            logger.info("[gripper] no feedback — holding at grip target")
-            self._gripper_hold_target = target
-            return True
-
-        actual = st.pos
-        delta = abs(actual - target)
-
-        # Hold at whatever position the gripper reached. This keeps the cup
-        # pinched even if the motor reached grip_pos (small objects), and if the
-        # cup slips the motor will re-close toward this hold point. Never
-        # auto-reopen: reopening here causes the open-close flap and drops the
-        # object.
-        self._gripper_hold_target = actual
-
-        # delta > threshold means gripper was blocked by an object before reaching full close
-        if delta > cfg.grip_delta_threshold:
-            logger.info("[gripper] GRIPPED object: pos=%.3f (delta=%.3f threshold=%.3f)",
-                        actual, delta, cfg.grip_delta_threshold)
-            return True
-        else:
-            logger.info("[gripper] close reached target pos=%.3f (delta=%.3f) — holding, keeping object",
-                        actual, delta)
-            return True
+        # This motor never acks feedback (verified: get_state always None), so
+        # polling here would only block on bus timeouts. Fire-and-forget: it
+        # closed, and the streaming thread holds the grip target so the cup
+        # stays pinched through lift and transport.
+        logger.info("[gripper] no feedback — holding at grip target")
+        self._gripper_hold_target = target
+        return True
 
     def get_state(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         return self._arm.get_state()
